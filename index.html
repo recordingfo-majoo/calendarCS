@@ -148,6 +148,8 @@ async function sendBookingEmail(toName, toEmail, bookingData) {
       end_time:    bookingData.end_time,
       attendees:   bookingData.attendees || "-",
       notes:       bookingData.notes || "-",
+      visit_type:  bookingData.visit_type || "-",
+      activity:    bookingData.activity || "-",
     });
   } catch(err) { console.warn("Booking email gagal:", err); }
 }
@@ -197,7 +199,80 @@ const ROOMS = [
   { id: 13, name: "Kadek Vincky Sedana",              city: "Denpasar",        area: "Jabalnusra",   colorHex: "#eab308" },
   { id: 14, name: "Dhafa Jusanto",                    city: "Malang",          area: "Jabalnusra",   colorHex: "#22c55e" },
 ];
-const ADMIN_EMAILS = ["zulfikar.dwi@majoo.id", "firjayanti@majoo.id"];
+const ADMIN_EMAILS = [
+  "zulfikar.dwi@majoo.id",
+  "firjayanti@majoo.id",
+  "aan.sayudi@majoo.id",
+  "rofby.hidayadi@majoo.id",
+  "jhovan@majoo.id",
+  "ridho.valentin@majoo.id",
+  "faisal.nugroho@majoo.id",
+  "faisal@majoo.id",
+  "andi@majoo.id",
+];
+
+// ─── ACTIVITY LIST ────────────────────────────────────────────────────────────
+// type: "Online" | "Offline" | "Both"   duration: jam (desimal)
+const ACTIVITY_LIST = [
+  // ── Offline ──
+  { type:"Offline", name:"BABYSITTING",                   duration:8.5 },
+  { type:"Offline", name:"ECRBRI EXISTING",               duration:1.5 },
+  { type:"Offline", name:"ECRBRI NEW",                    duration:1.5 },
+  { type:"Offline", name:"FREE TRAINING",                 duration:2.5 },
+  { type:"Offline", name:"MERCHANT ENGAGEMENT",           duration:1.5 },
+  { type:"Offline", name:"NEW ACQUISITION -",             duration:0   },
+  { type:"Offline", name:"NEW ACQUISITION ADVANCE",       duration:3.5 },
+  { type:"Offline", name:"NEW ACQUISITION ENTERPRISE",    duration:3.5 },
+  { type:"Offline", name:"NEW ACQUISITION PRIME+",        duration:3.5 },
+  { type:"Offline", name:"NEW ACQUISITION STARTER",       duration:2.5 },
+  { type:"Offline", name:"NEW ACQUISITION STARTER BASIC", duration:1.5 },
+  { type:"Offline", name:"PRE-SALES",                     duration:3.5 },
+  { type:"Offline", name:"RENEWAL VISIT",                 duration:1.5 },
+  { type:"Offline", name:"Standee Delivery",              duration:1   },
+  { type:"Offline", name:"SUPPORT BERBAYAR",              duration:2.5 },
+  { type:"Offline", name:"SUPPORT INCIDENT",              duration:2.5 },
+  { type:"Offline", name:"TRAINING BERBAYAR",             duration:3.5 },
+  { type:"Offline", name:"TRAINING PRIME",                duration:3.5 },
+  { type:"Offline", name:"Training Prime 2",              duration:3.5 },
+  { type:"Offline", name:"Training Prime 3",              duration:3.5 },
+  { type:"Offline", name:"Training Prime+",               duration:3.5 },
+  { type:"Offline", name:"TRAINING RENEWAL",              duration:3.5 },
+  { type:"Offline", name:"Visit Beta",                    duration:2.5 },
+  { type:"Offline", name:"Visit Upsell dan Upgrade",      duration:1.5 },
+  { type:"Offline", name:"Winback Monthly Visit",         duration:1.5 },
+  { type:"Offline", name:"Winback Visit",                 duration:1.5 },
+  { type:"Offline", name:"XL1BIZ",                       duration:1.5 },
+  { type:"Offline", name:"XL1BIZSTARTER",                duration:2.5 },
+  // ── Online ──
+  { type:"Online",  name:"BABYSITTING",                   duration:8   },
+  { type:"Online",  name:"FREE TRAINING",                 duration:2   },
+  { type:"Online",  name:"MERCHANT ENGAGEMENT",           duration:1   },
+  { type:"Online",  name:"NEW ACQUISITION -",             duration:0   },
+  { type:"Online",  name:"NEW ACQUISITION ADVANCE",       duration:3   },
+  { type:"Online",  name:"NEW ACQUISITION BUSINESS",      duration:3   },
+  { type:"Online",  name:"NEW ACQUISITION BUSINESS PRO",  duration:3   },
+  { type:"Online",  name:"NEW ACQUISITION ENTERPRISE",    duration:3   },
+  { type:"Online",  name:"NEW ACQUISITION MAXIMA STARTER",duration:2   },
+  { type:"Online",  name:"NEW ACQUISITION PRIME+",        duration:3   },
+  { type:"Online",  name:"NEW ACQUISITION STARTER",       duration:2   },
+  { type:"Online",  name:"NEW ACQUISITION STARTER BASIC", duration:1   },
+  { type:"Online",  name:"PRE-SALES",                     duration:3   },
+  { type:"Online",  name:"RENEWAL VISIT",                 duration:1   },
+  { type:"Online",  name:"SUPPORT BERBAYAR",              duration:2   },
+  { type:"Online",  name:"SUPPORT INCIDENT",              duration:2   },
+  { type:"Online",  name:"TRAINING BERBAYAR",             duration:3   },
+  { type:"Online",  name:"TRAINING PRIME",                duration:3   },
+  { type:"Online",  name:"Training Prime 2",              duration:3   },
+  { type:"Online",  name:"Training Prime 3",              duration:3   },
+  { type:"Online",  name:"Training Prime+",               duration:3   },
+  { type:"Online",  name:"TRAINING RENEWAL",              duration:3   },
+  { type:"Online",  name:"Visit Beta",                    duration:2   },
+  { type:"Online",  name:"XL1BIZ",                       duration:1   },
+  { type:"Online",  name:"XL1BIZSTARTER",                duration:2   },
+  { type:"Online",  name:"Standee Delivery",              duration:0.25},
+  // ── Semua (Online & Offline) ──
+  { type:"Both",    name:"On Duty CC",                    duration:8   },
+];
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 function localDateStr(d) {
@@ -209,6 +284,15 @@ function localDateStr(d) {
 function todayStr() { return localDateStr(new Date()); }
 function toMin(t) { const [h,m] = t.split(":").map(Number); return h*60+m; }
 function addHour(t) { const [h,m] = t.split(":").map(Number); return `${String(Math.min(h+1,20)).padStart(2,"0")}:${String(m).padStart(2,"0")}`; }
+// Hitung end_time dari start_time + durasi jam (desimal)
+function autoEndTime(startTime, durationHours) {
+  if (!startTime || !durationHours || durationHours <= 0) return null;
+  const [h,m] = startTime.split(":").map(Number);
+  const totalMin = h*60 + m + Math.round(durationHours * 60);
+  const endH = Math.floor(totalMin / 60);
+  const endM = totalMin % 60;
+  return `${String(Math.min(endH, 23)).padStart(2,"0")}:${String(endM).padStart(2,"0")}`;
+}
 function fmtMonthYear(d) { return d.toLocaleDateString("id-ID",{month:"long",year:"numeric"}); }
 function getWeekDays(base) {
   const d = new Date(base), mon = new Date(d), day = d.getDay();
@@ -623,29 +707,72 @@ function BookingChip({ booking, room, currentUser, col, totalCols, onClick }) {
         color: room.colorHex,
       }}
       onClick={()=>onClick(booking)}>
-      <div className="font-semibold truncate">{booking.title}</div>
-      {height>36 && <div className="text-xs opacity-75 truncate">{booking.start_time}–{booking.end_time}</div>}
-      {height>52 && isOwn && <div className="text-xs opacity-60 truncate">📌 Saya</div>}
+      <div className="font-semibold truncate leading-tight">{booking.title}</div>
+      {height>28 && booking.activity && <div className="text-xs opacity-80 truncate">{booking.activity}</div>}
+      {height>40 && <div className="text-xs opacity-70 truncate">{booking.start_time}–{booking.end_time}{booking.visit_type ? ` · ${booking.visit_type==="Online"?"🌐":"📍"}` : ""}</div>}
+      {height>56 && isOwn && <div className="text-xs opacity-60 truncate">📌 Saya</div>}
     </div>
   );
 }
 
 // ─── CALENDAR GRID ────────────────────────────────────────────────────────────
-function CalendarGrid({ weekDays, bookings, rooms, selectedRooms, currentUser, onSlotClick, onChipClick }) {
+function CalendarGrid({ weekDays, bookings, rooms, selectedRooms, currentUser, onSlotClick, onChipClick, holidays }) {
+  const [expandedHolDay, setExpandedHolDay] = React.useState(null);
+
+  // Tutup popup jika klik di luar
+  React.useEffect(() => {
+    const handler = () => setExpandedHolDay(null);
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, []);
+
   return (
     <div className="flex-1 overflow-auto">
+      {/* ── Day header ── */}
       <div className="sticky top-0 z-10 bg-white border-b border-slate-200 flex">
         <div className="w-16 flex-shrink-0"/>
         {weekDays.map((day,i)=>{
-          const isToday = localDateStr(day)===todayStr();
+          const isToday  = localDateStr(day)===todayStr();
+          const dateStr  = localDateStr(day);
+          const holRooms = selectedRooms.filter(rid => isHoliday(holidays, rid, dateStr));
+          const isExpanded = expandedHolDay === dateStr;
           return (
-            <div key={i} className={`flex-1 text-center py-3 border-l border-slate-100 ${isToday?"text-blue-600 bg-blue-50":"text-slate-600"}`}>
+            <div key={i} className={`flex-1 text-center py-2 border-l border-slate-100 ${isToday?"text-blue-600 bg-blue-50":"text-slate-600"}`}>
               <span className="text-xs font-normal text-slate-400 block">{day.toLocaleDateString("id-ID",{weekday:"short"})}</span>
               <span className={`text-lg font-bold leading-tight ${isToday?"bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center mx-auto":""}`}>{day.getDate()}</span>
+
+              {/* Badge libur — klik untuk lihat nama agent */}
+              {holRooms.length > 0 && (
+                <div className="mt-1 px-1 relative">
+                  <button
+                    onClick={e => { e.stopPropagation(); setExpandedHolDay(isExpanded ? null : dateStr); }}
+                    className="w-full text-center text-xs font-semibold text-orange-600 bg-orange-50 border border-orange-200 rounded-full px-1.5 py-0.5 leading-tight hover:bg-orange-100 transition-colors">
+                    🏖 {holRooms.length} libur
+                  </button>
+                  {/* Dropdown nama agent */}
+                  {isExpanded && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-orange-200 rounded-xl shadow-lg z-50 py-1.5 min-w-[140px]"
+                      onClick={e=>e.stopPropagation()}>
+                      <div className="text-xs font-semibold text-orange-500 px-3 pb-1 border-b border-orange-100 mb-1">Agent Libur</div>
+                      {holRooms.map(rid => {
+                        const rm = rooms.find(r=>r.id===rid);
+                        return (
+                          <div key={rid} className="flex items-center gap-1.5 px-3 py-1">
+                            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{backgroundColor: rm?.colorHex}}/>
+                            <span className="text-xs text-slate-700 truncate">{rm?.name}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
       </div>
+
+      {/* ── Time grid — bersih, tanpa warna/overlay libur ── */}
       <div className="flex">
         <div className="w-16 flex-shrink-0">
           {HOURS.map(h=>(
@@ -664,7 +791,7 @@ function CalendarGrid({ weekDays, bookings, rooms, selectedRooms, currentUser, o
               {HOURS.map(h=>(
                 <div key={h} className="h-14 border-b border-slate-100 time-slot" onClick={()=>onSlotClick(dateStr,h)}/>
               ))}
-              <div className="absolute inset-0 pointer-events-none">
+              <div className="absolute inset-0 pointer-events-none" style={{zIndex:5}}>
                 {laid.map(b=>{
                   const room = rooms.find(r=>r.id===b.room_id);
                   return (
@@ -735,19 +862,379 @@ function AreaAgentPicker({ rooms, form, set, canEdit }) {
   );
 }
 
+
+// ─── HOLIDAY HELPERS ──────────────────────────────────────────────────────────
+function isHoliday(holidays, roomId, dateStr) {
+  const room = ROOMS.find(r => r.id === roomId);
+  return holidays.some(h =>
+    h.date === dateStr && (
+      h.room_id === roomId ||
+      (h.area === room?.area && !h.room_id) ||
+      (!h.room_id && !h.area)  // berlaku semua
+    )
+  );
+}
+
+function getHolidayInfo(holidays, roomId, dateStr) {
+  const room = ROOMS.find(r => r.id === roomId);
+  return holidays.find(h =>
+    h.date === dateStr && (
+      h.room_id === roomId ||
+      (h.area === room?.area && !h.room_id)
+    )
+  );
+}
+
+
+// ─── HOLIDAY LIST COMPONENT (accordion per agent) ────────────────────────────
+function HolidayList({ holidays, onDelete }) {
+  const [openKeys, setOpenKeys] = React.useState({});
+  const toggle = key => setOpenKeys(p => ({...p, [key]: !p[key]}));
+
+  if (holidays.length === 0) {
+    return <div className="text-center text-slate-400 py-10 p-5">Belum ada jadwal libur</div>;
+  }
+
+  // Group by agent (room_id) or area
+  const groups = {};
+  holidays.forEach(h => {
+    let key, label, color, sublabel;
+    if (h.room_id) {
+      const room = ROOMS.find(r => r.id === h.room_id);
+      key      = "agent_" + h.room_id;
+      label    = room?.name || "Agent #" + h.room_id;
+      sublabel = room?.city || "";
+      color    = room?.colorHex || "#64748b";
+    } else if (h.area) {
+      key      = "area_" + h.area;
+      label    = "Area " + h.area;
+      sublabel = "Semua agent";
+      color    = AREA_COLORS[h.area] || "#64748b";
+    } else {
+      key      = "all";
+      label    = "Semua Agent";
+      sublabel = "";
+      color    = "#64748b";
+    }
+    if (!groups[key]) groups[key] = { key, label, sublabel, color, items: [] };
+    groups[key].items.push(h);
+  });
+
+  return (
+    <div className="p-4 space-y-2">
+      {Object.values(groups).map(g => {
+        const isOpen = openKeys[g.key];
+        const sorted = [...g.items].sort((a,b) => a.date.localeCompare(b.date));
+        return (
+          <div key={g.key} className="border border-slate-200 rounded-xl overflow-hidden">
+            {/* Header accordion */}
+            <button onClick={() => toggle(g.key)}
+              className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors">
+              <div className="flex items-center gap-3">
+                <span className="w-3 h-3 rounded-full flex-shrink-0" style={{backgroundColor: g.color}}/>
+                <div className="text-left">
+                  <div className="font-semibold text-sm text-slate-800">{g.label}</div>
+                  {g.sublabel && <div className="text-xs text-slate-400">📍 {g.sublabel}</div>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-600">
+                  {g.items.length} hari
+                </span>
+                <span className="text-slate-400 text-xs">{isOpen ? "▲" : "▼"}</span>
+              </div>
+            </button>
+            {/* List tanggal */}
+            {isOpen && (
+              <div className="border-t border-slate-100 divide-y divide-slate-50">
+                {sorted.map(h => (
+                  <div key={h.id} className="flex items-center justify-between px-4 py-2.5 bg-red-50/40">
+                    <div>
+                      <div className="text-sm font-medium text-slate-700">
+                        {new Date(h.date+"T00:00").toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
+                      </div>
+                      <div className="text-xs text-slate-400 mt-0.5">📝 {h.reason || "Libur"}</div>
+                    </div>
+                    <button onClick={() => onDelete(h.id)}
+                      className="ml-3 p-1.5 rounded-lg text-red-400 hover:text-red-600 hover:bg-red-100 transition-colors text-sm">
+                      🗑
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── HOLIDAY MODAL ────────────────────────────────────────────────────────────
+function HolidayModal({ isOpen, onClose, holidays, onSave, onDelete, currentUser }) {
+  const today = new Date();
+  const [viewYear,  setViewYear]  = React.useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = React.useState(today.getMonth());
+  const [selected,  setSelected]  = React.useState([]);  // array of 'YYYY-MM-DD'
+  const [scope,     setScope]     = React.useState("area"); // "area" | "agent"
+  const [selArea,   setSelArea]   = React.useState(null);
+  const [selAgents, setSelAgents] = React.useState([]);  // array of room_id
+  const [reason,    setReason]    = React.useState("Libur");
+  const [loading,   setLoading]   = React.useState(false);
+  const [tab,       setTab]       = React.useState("set"); // "set" | "list"
+
+  if (!isOpen) return null;
+
+  // Build calendar days for current viewMonth
+  const firstDay = new Date(viewYear, viewMonth, 1);
+  const lastDay  = new Date(viewYear, viewMonth + 1, 0);
+  const startDow = (firstDay.getDay() + 6) % 7; // Monday=0
+  const calDays  = [];
+  for (let i = 0; i < startDow; i++) calDays.push(null);
+  for (let d = 1; d <= lastDay.getDate(); d++) {
+    const dt = new Date(viewYear, viewMonth, d);
+    calDays.push(localDateStr(dt));
+  }
+
+  const monthLabel = firstDay.toLocaleDateString("id-ID", { month: "long", year: "numeric" });
+  const DOW_LABELS = ["Sen","Sel","Rab","Kam","Jum","Sab","Min"];
+
+  const toggleDate = (dateStr) => {
+    setSelected(p => p.includes(dateStr) ? p.filter(d => d !== dateStr) : [...p, dateStr]);
+  };
+
+  const toggleAgent = (id) => {
+    setSelAgents(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+  };
+
+  const areaAgents = selArea ? ROOMS.filter(r => r.area === selArea) : [];
+
+  const handleSave = async () => {
+    if (selected.length === 0) return alert("Pilih minimal 1 tanggal.");
+    if (scope === "area" && !selArea) return alert("Pilih area.");
+    if (scope === "agent" && selAgents.length === 0) return alert("Pilih minimal 1 agent.");
+    setLoading(true);
+    try {
+      const entries = [];
+      if (scope === "area") {
+        for (const date of selected) {
+          entries.push({ id: "hol-" + Date.now() + "-" + Math.random().toString(36).slice(2),
+            area: selArea, room_id: null, date, reason, created_by: currentUser?.email });
+        }
+      } else {
+        for (const date of selected) {
+          for (const rid of selAgents) {
+            entries.push({ id: "hol-" + Date.now() + "-" + Math.random().toString(36).slice(2),
+              room_id: rid, area: null, date, reason, created_by: currentUser?.email });
+          }
+        }
+      }
+      for (const entry of entries) {
+        await supa.insert("holidays", entry);
+      }
+      await onSave();
+      setSelected([]);
+      alert(`✅ ${entries.length} jadwal libur berhasil disimpan!`);
+    } catch(e) { alert("Gagal menyimpan: " + e.message); }
+    setLoading(false);
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm("Hapus jadwal libur ini?")) return;
+    try {
+      await fetch(`${SUPA_URL}/rest/v1/holidays?id=eq.${id}`, { method:"DELETE", headers: supa.headers });
+      await onSave();
+    } catch(e) { alert("Gagal hapus: " + e.message); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center modal-overlay bg-black/30">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[92vh] flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🏖️</span>
+            <h2 className="text-lg font-bold text-slate-800">Kelola Jadwal Libur</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-slate-100 flex-shrink-0">
+          {[["set","📅 Set Libur"],["list","📋 Daftar Libur"]].map(([k,label])=>(
+            <button key={k} onClick={()=>setTab(k)}
+              className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${tab===k?"text-blue-600 border-b-2 border-blue-600":"text-slate-400 hover:text-slate-600"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {/* ── TAB SET LIBUR ── */}
+          {tab === "set" && (
+            <div className="p-5 space-y-5">
+              {/* Month navigator */}
+              <div className="flex items-center justify-between">
+                <button onClick={()=>{ let m=viewMonth-1,y=viewYear; if(m<0){m=11;y--;} setViewMonth(m);setViewYear(y); setSelected([]); }}
+                  className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 font-bold">◀</button>
+                <span className="font-bold text-slate-800 capitalize">{monthLabel}</span>
+                <button onClick={()=>{ let m=viewMonth+1,y=viewYear; if(m>11){m=0;y++;} setViewMonth(m);setViewYear(y); setSelected([]); }}
+                  className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 font-bold">▶</button>
+              </div>
+
+              {/* Calendar grid */}
+              <div>
+                <div className="grid grid-cols-7 mb-1">
+                  {DOW_LABELS.map(d=>(
+                    <div key={d} className={`text-center text-xs font-semibold py-1 ${d==="Min"?"text-red-400":"text-slate-400"}`}>{d}</div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-7 gap-1">
+                  {calDays.map((dateStr, idx) => {
+                    if (!dateStr) return <div key={idx}/>;
+                    const isSelected  = selected.includes(dateStr);
+                    const dow         = new Date(dateStr).getDay(); // 0=Sun
+                    const isSun       = dow === 0;
+                    return (
+                      <button key={dateStr} onClick={() => toggleDate(dateStr)}
+                        className={`aspect-square rounded-lg text-sm font-semibold transition-all border-2
+                          ${isSelected ? "bg-orange-500 text-white border-orange-500 shadow-md"
+                            : isSun ? "text-red-400 border-transparent hover:bg-red-50"
+                            : "text-slate-700 border-transparent hover:bg-slate-100"}`}>
+                        {dateStr.split("-")[2].replace(/^0/,"")}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-2 mt-2 text-xs text-slate-400">
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-orange-500 rounded inline-block"/>Dipilih</span>
+                  <span className="text-red-400 ml-1">Merah = Minggu</span>
+                </div>
+                {selected.length > 0 && (
+                  <div className="mt-2 text-xs font-medium text-orange-600 bg-orange-50 rounded-lg px-3 py-2">
+                    {selected.length} tanggal dipilih: {selected.sort().map(d=>d.split("-").slice(1).join("/")).join(", ")}
+                  </div>
+                )}
+              </div>
+
+              {/* Scope: area or agent */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Berlaku Untuk</label>
+                <div className="flex gap-2 mb-3">
+                  {[["area","🗺 Per Area"],["agent","👤 Per Agent"]].map(([k,label])=>(
+                    <button key={k} type="button" onClick={()=>{setScope(k);setSelArea(null);setSelAgents([]);}}
+                      className={`flex-1 py-2 rounded-lg border-2 text-xs font-semibold transition-all
+                        ${scope===k?"border-blue-500 bg-blue-50 text-blue-700":"border-slate-100 bg-slate-50 text-slate-500"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {scope === "area" && (
+                  <div className="flex gap-2">
+                    {AREAS.map(area=>(
+                      <button key={area} type="button" onClick={()=>{setSelArea(area);setSelAgents([]);}}
+                        className={`flex-1 py-2 rounded-lg border-2 text-xs font-semibold transition-all
+                          ${selArea===area?"shadow-sm":"border-slate-100 bg-slate-50 text-slate-500"}`}
+                        style={selArea===area?{borderColor:AREA_COLORS[area],backgroundColor:AREA_COLORS[area]+"18",color:AREA_COLORS[area]}:{}}>
+                        {area}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {scope === "agent" && (
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      {AREAS.map(area=>(
+                        <button key={area} type="button" onClick={()=>setSelArea(selArea===area?null:area)}
+                          className={`flex-1 py-1.5 rounded-lg border text-xs font-semibold transition-all
+                            ${selArea===area?"border-blue-400 bg-blue-50 text-blue-700":"border-slate-200 text-slate-500"}`}>
+                          {area}
+                        </button>
+                      ))}
+                    </div>
+                    {selArea && (
+                      <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto">
+                        <button type="button"
+                          onClick={()=>{ const ids=areaAgents.map(r=>r.id); const allIn=ids.every(id=>selAgents.includes(id));
+                            setSelAgents(p=>allIn?p.filter(x=>!ids.includes(x)):[...new Set([...p,...ids])]); }}
+                          className="col-span-2 py-1 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-slate-50">
+                          {areaAgents.every(r=>selAgents.includes(r.id))?"✓ Batalkan Semua":"Pilih Semua "+selArea}
+                        </button>
+                        {areaAgents.map(room=>(
+                          <button key={room.id} type="button" onClick={()=>toggleAgent(room.id)}
+                            className={`text-left rounded-lg p-2 border-2 text-xs transition-all
+                              ${selAgents.includes(room.id)?"shadow-sm":"border-slate-100 bg-slate-50"}`}
+                            style={selAgents.includes(room.id)?{borderColor:room.colorHex,backgroundColor:room.colorHex+"15"}:{}}>
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full" style={{backgroundColor:room.colorHex}}/>
+                              <span className="font-semibold text-slate-700 leading-tight">{room.name}</span>
+                            </div>
+                            <div className="text-slate-400 pl-3.5">📍 {room.city}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {selAgents.length > 0 && (
+                      <div className="text-xs text-blue-600 bg-blue-50 rounded px-2 py-1">{selAgents.length} agent dipilih</div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Reason */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Keterangan Libur</label>
+                <input type="text" value={reason} onChange={e=>setReason(e.target.value)}
+                  placeholder="cth. Libur Nasional, Cuti Bersama..."
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+              </div>
+
+              <button onClick={handleSave} disabled={loading || selected.length===0}
+                className="w-full bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition-colors shadow-sm">
+                {loading ? "Menyimpan..." : `🏖️ Simpan ${selected.length} Hari Libur`}
+              </button>
+            </div>
+          )}
+
+          {/* ── TAB DAFTAR LIBUR ── */}
+          {tab === "list" && (
+            <HolidayList holidays={holidays} onDelete={handleDelete}/>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── BOOKING MODAL ────────────────────────────────────────────────────────────
-function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, bookings, currentUser }) {
+function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, bookings, currentUser, holidays }) {
   const isEdit = !!initialData?.id;
-  const blank  = { room_id:rooms[0]?.id, title:"", date:todayStr(), start_time:"09:00", end_time:"10:00", attendees:"", notes:"" };
+  const blank  = { room_id:rooms[0]?.id, title:"", date:todayStr(), start_time:"09:00", end_time:"10:00", attendees:"", notes:"", visit_type:"Online", activity:"" };
   const [form,     setForm]     = useState(blank);
   const [conflict, setConflict] = useState(null);
   const [loading,  setLoading]  = useState(false);
 
-  useEffect(()=>{ if(isOpen){ setForm(initialData||blank); setConflict(null); } },[isOpen,initialData]);
+  useEffect(()=>{ if(isOpen){ setForm({...blank,...(initialData||{})}); setConflict(null); } },[isOpen,initialData]);
   if (!isOpen) return null;
 
-  const set = (k,v) => {
-    const up = {...form,[k]:v};
+  // Cari data activity dari ACTIVITY_LIST
+  const getActivityData = (actName, visitType) =>
+    ACTIVITY_LIST.find(a => a.name === actName && (a.type === visitType || a.type === "Both"));
+
+  const set = (k, v) => {
+    let up = {...form, [k]: v};
+    // Reset activity saat visit_type berubah
+    if (k === "visit_type") up = {...up, activity: ""};
+    // Auto-hitung end_time saat activity atau start_time berubah
+    if (k === "activity" || k === "start_time") {
+      const actName  = k === "activity"    ? v : up.activity;
+      const startT   = k === "start_time"  ? v : up.start_time;
+      const actData  = getActivityData(actName, up.visit_type);
+      if (actData && actData.duration > 0) {
+        const newEnd = autoEndTime(startT, actData.duration);
+        if (newEnd) up = {...up, end_time: newEnd};
+      }
+    }
     setForm(up);
     if (up.room_id && up.date && up.start_time && up.end_time)
       setConflict(findConflict(bookings, up));
@@ -757,6 +1244,7 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
 
   const submit = async e => {
     e.preventDefault();
+    if (!form.activity) { alert("Pilih category activity terlebih dahulu."); return; }
     if (conflict || loading) return;
     setLoading(true);
     await onSave({...form, booked_by_name:currentUser?.name, booked_by_email:currentUser?.email});
@@ -771,9 +1259,63 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
         </div>
         <form onSubmit={submit} className="p-6 space-y-4">
+
+          {/* ── Visit Type ── */}
           <div>
-            <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Nama Meeting *</label>
-            <input type="text" required placeholder="cth. Sprint Planning" value={form.title}
+            <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">Type Visit *</label>
+            <div className="flex gap-2">
+              {["Online","Offline"].map(vt => (
+                <button type="button" key={vt} disabled={!canEdit}
+                  onClick={() => set("visit_type", vt)}
+                  className={`flex-1 py-2 rounded-lg border-2 text-sm font-semibold transition-all ${form.visit_type===vt
+                    ? (vt==="Online"
+                        ? "border-blue-500 bg-blue-50 text-blue-700"
+                        : "border-orange-500 bg-orange-50 text-orange-700")
+                    : "border-slate-100 bg-slate-50 text-slate-500 hover:bg-slate-100"}`}>
+                  {vt === "Online" ? "🌐 Online" : "📍 Offline"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Activity ── */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Category Activity *</label>
+            {(() => {
+              const acts = ACTIVITY_LIST.filter(a => a.type === form.visit_type || a.type === "Both");
+              const sel  = getActivityData(form.activity, form.visit_type);
+              return (
+                <div>
+                  <select required value={form.activity} disabled={!canEdit}
+                    onChange={e => set("activity", e.target.value)}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 bg-white">
+                    <option value="">— Pilih activity —</option>
+                    {acts.map(a => (
+                      <option key={a.type+a.name} value={a.name}>
+                        {a.name}{a.duration > 0 ? ` (${a.duration} jam)` : " (durasi manual)"}
+                      </option>
+                    ))}
+                  </select>
+                  {sel && sel.duration > 0 && (
+                    <div className="mt-1 text-xs text-blue-600 flex items-center gap-1">
+                      <span>⏱</span>
+                      <span>Durasi <strong>{sel.duration} jam</strong> — waktu selesai otomatis dihitung dari jam mulai</span>
+                    </div>
+                  )}
+                  {sel && sel.duration === 0 && (
+                    <div className="mt-1 text-xs text-amber-600 flex items-center gap-1">
+                      <span>⚠️</span>
+                      <span>Durasi tidak tetap — isi waktu selesai secara manual</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Nama / Keterangan Meeting *</label>
+            <input type="text" required placeholder="cth. Training Sprint Planning, Visit PT. XYZ..." value={form.title}
               onChange={e=>set("title",e.target.value)} disabled={!canEdit}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50"/>
           </div>
@@ -798,7 +1340,13 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
           {conflict && (
             <div className="bg-red-50 border border-red-300 rounded-lg px-4 py-3 text-sm text-red-700 flex items-start gap-2">
               <span className="text-lg flex-shrink-0">⚠️</span>
-              <div><strong>Konflik Jadwal!</strong> Room sudah dibooking untuk <strong>"{conflict.title}"</strong> pukul {conflict.start_time}–{conflict.end_time} oleh {conflict.booked_by_name||"pengguna lain"}.</div>
+              <div><strong>Konflik Jadwal!</strong> Sudah dibooking untuk <strong>"{conflict.title}"</strong> pukul {conflict.start_time}–{conflict.end_time} oleh {conflict.booked_by_name||"pengguna lain"}.</div>
+            </div>
+          )}
+          {!conflict && form.room_id && form.date && isHoliday(holidays||[], form.room_id, form.date) && (
+            <div className="bg-orange-50 border border-orange-300 rounded-lg px-4 py-3 text-sm text-orange-700 flex items-start gap-2">
+              <span className="text-lg flex-shrink-0">🏖️</span>
+              <div><strong>Hari Libur!</strong> Agent ini dijadwalkan libur pada tanggal tersebut. Booking tidak dapat dilakukan.</div>
             </div>
           )}
           <div>
@@ -827,7 +1375,7 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
             <button type="button" onClick={onClose}
               className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">Batal</button>
             {canEdit && (
-              <button type="submit" disabled={!!conflict||loading}
+              <button type="submit" disabled={!!conflict||loading||(form.room_id&&form.date&&isHoliday(holidays||[],form.room_id,form.date))}
                 className="px-5 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 shadow-sm">
                 {loading ? "Menyimpan..." : isEdit?"Simpan":"Booking Sekarang"}
               </button>
@@ -845,7 +1393,9 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, currentUser }) 
   const isOwner = booking.booked_by_email === currentUser?.email;
   const canAct  = isOwner || currentUser?.role === "admin";
   const rows = [
-    {icon:"🏢", label:"Room",   val:room.name},
+    {icon:"🏢", label:"Agent",   val:room.name + (room.city ? ` — 📍 ${room.city}` : "")},
+    booking.visit_type && {icon: booking.visit_type==="Online"?"🌐":"📍", label:"Type Visit", val: booking.visit_type},
+    booking.activity   && {icon:"⚡", label:"Activity",  val: booking.activity},
     {icon:"📅", label:"Tanggal",val:new Date(booking.date+"T00:00").toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})},
     {icon:"🕐", label:"Waktu",  val:`${booking.start_time} – ${booking.end_time}`},
     booking.attendees      && {icon:"👥",label:"Peserta",        val:booking.attendees},
@@ -1107,7 +1657,9 @@ function AccountModal({ currentUser, onClose, onUpdate }) {
 function App() {
   const [currentUser,   setCurrentUser]   = useState(()=>loadSession());
   const [bookings,      setBookings]      = useState([]);
+  const [holidays,      setHolidays]      = useState([]);
   const [selectedRooms, setSelectedRooms] = useState(ROOMS.map(r=>r.id));
+  const [holidayOpen,   setHolidayOpen]   = useState(false);
   const [baseDate,      setBaseDate]      = useState(new Date());
   const [modalOpen,     setModalOpen]     = useState(false);
   const [modalInit,     setModalInit]     = useState(null);
@@ -1132,8 +1684,15 @@ function App() {
     setLoading(false);
   }, []);
 
+  const loadHolidays = useCallback(async () => {
+    try {
+      const data = await supa.get("holidays", { select: "*", order: "date.asc" });
+      setHolidays(data);
+    } catch(e) { console.warn("Gagal load holidays:", e.message); }
+  }, []);
+
   // Auto-load saat login
-  useEffect(()=>{ if (currentUser) loadBookings(); },[currentUser]);
+  useEffect(()=>{ if (currentUser) { loadBookings(); loadHolidays(); } },[currentUser]);
 
   // Realtime — poll setiap 30 detik sebagai fallback
   useEffect(()=>{
@@ -1181,7 +1740,8 @@ function App() {
 
   const openNew = (date, startTime) => {
     setModalInit({room_id:selectedRooms[0]||ROOMS[0].id,title:"",date:date||todayStr(),
-      start_time:startTime||"09:00",end_time:startTime?addHour(startTime):"10:00",attendees:"",notes:""});
+      start_time:startTime||"09:00",end_time:startTime?addHour(startTime):"10:00",
+      attendees:"",notes:"",visit_type:"Online",activity:""});
     setModalOpen(true);
   };
   const openEdit = b => { setDetailBooking(null); setModalInit({...b}); setModalOpen(true); };
@@ -1194,6 +1754,7 @@ function App() {
           start_time: data.start_time, end_time: data.end_time,
           attendees: data.attendees, notes: data.notes,
           booked_by_name: data.booked_by_name, booked_by_email: data.booked_by_email,
+          visit_type: data.visit_type || "Online", activity: data.activity || "",
         });
         setBookings(p=>p.map(b=>b.id===data.id?(updated[0]||data):b));
         notify("update", data);
@@ -1204,23 +1765,11 @@ function App() {
           start_time: data.start_time, end_time: data.end_time,
           attendees: data.attendees||"", notes: data.notes||"",
           booked_by_name: data.booked_by_name, booked_by_email: data.booked_by_email,
+          visit_type: data.visit_type || "Online", activity: data.activity || "",
         });
         setBookings(p=>[...p, inserted[0]||{...data,id:newId}]);
         notify("create", data);
-        // kirim email notifikasi booking
-        const bookedRoom = ROOMS.find(r=>r.id===data.room_id);
-        if (data.booked_by_email) {
-          sendBookingEmail(data.booked_by_name, data.booked_by_email, {
-            agentName:  bookedRoom?.name || "",
-            agentCity:  bookedRoom?.city || "",
-            title:      data.title,
-            date:       data.date,
-            start_time: data.start_time,
-            end_time:   data.end_time,
-            attendees:  data.attendees,
-            notes:      data.notes,
-          });
-        }
+        // Email notifikasi booking dinonaktifkan
       }
       setModalOpen(false);
     } catch(e) {
@@ -1312,6 +1861,12 @@ function App() {
             <span className="text-xs text-slate-400 hidden sm:block">{currentUser.role==="admin"?"Admin":"Employee"}</span>
             <button onClick={e=>{e.stopPropagation();logout();}} className="text-xs text-red-400 hover:text-red-600 hidden sm:block">Keluar</button>
           </button>
+          {currentUser?.role==="admin" && (
+            <button onClick={()=>setHolidayOpen(true)}
+              className="flex items-center gap-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
+              🏖️ Libur
+            </button>
+          )}
           <button onClick={()=>openNew()}
             className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
             <span className="text-base leading-none">+</span> Booking
@@ -1332,14 +1887,14 @@ function App() {
           ) : (
             <CalendarGrid weekDays={weekDays} bookings={bookings} rooms={ROOMS}
               selectedRooms={selectedRooms} currentUser={currentUser}
-              onSlotClick={openNew} onChipClick={b=>setDetailBooking(b)}/>
+              onSlotClick={openNew} onChipClick={b=>setDetailBooking(b)} holidays={holidays}/>
           )}
         </main>
       </div>
 
       <BookingModal isOpen={modalOpen} onClose={()=>setModalOpen(false)}
         onSave={handleSave} onDelete={handleDelete} rooms={ROOMS}
-        initialData={modalInit} bookings={bookings} currentUser={currentUser}/>
+        initialData={modalInit} bookings={bookings} currentUser={currentUser} holidays={holidays}/>
 
       {detailBooking && (
         <DetailModal booking={detailBooking} room={ROOMS.find(r=>r.id===detailBooking.room_id)}
@@ -1348,6 +1903,8 @@ function App() {
       )}
 
       {notifOpen && <NotifPanel logs={notifLogs} onClose={()=>setNotifOpen(false)} onMarkAllRead={markAllRead} onClearAll={clearAllNotifs}/>}
+      {holidayOpen && <HolidayModal isOpen={holidayOpen} onClose={()=>setHolidayOpen(false)}
+        holidays={holidays} onSave={loadHolidays} onDelete={loadHolidays} currentUser={currentUser}/>}
       {accountOpen && <AccountModal currentUser={currentUser} onClose={()=>setAccountOpen(false)} onUpdate={u=>{updateUser(u);setAccountOpen(false);addToast({icon:"✅",title:"Profil diperbarui",message:"Data akun berhasil disimpan.",color:"#10b981"});}}/>}
       <ToastContainer toasts={toasts}/>
     </div>
