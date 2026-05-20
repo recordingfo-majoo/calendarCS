@@ -10,6 +10,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
     .fade-in { animation: fadeIn 0.25s ease forwards; }
@@ -99,6 +101,12 @@ const EJS_FROM         = "recordingfo@majoo.id";
 const EJS_PUBLIC       = "ywihzNNLC8bD8iftb";
 window.addEventListener("DOMContentLoaded", () => { emailjs.init({ publicKey: EJS_PUBLIC }); });
 const BASE_URL         = window.location.origin; // auto-detect URL, tidak terikat meetingroom.majoo.id
+
+// ─── GOOGLE CALENDAR CONFIG ───────────────────────────────────────────────────
+// Ganti dengan Client ID dari Google Cloud Console kamu
+const GCAL_CLIENT_ID = "957714220580-jkvd2mname0ni6v4gm87g579m57146mu.apps.googleusercontent.com";
+const GCAL_SCOPE     = "https://www.googleapis.com/auth/calendar.events";
+const GCAL_TIMEZONE  = "Asia/Jakarta";
 
 // OTP store (in-memory)
 const _otpStore = {};
@@ -1535,6 +1543,7 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
     booking.activity   && {icon:"⚡", label:"Activity",  val: booking.activity},
     {icon:"📅", label:"Tanggal",val:new Date(booking.date+"T00:00").toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})},
     {icon:"🕐", label:"Waktu",  val:`${booking.start_time} – ${booking.end_time}`},
+    booking.meet_link      && {icon:"🎥",label:"Google Meet", val:booking.meet_link, isLink:true},
     booking.attendees      && {icon:"👥",label:"Peserta",        val:booking.attendees},
     booking.booked_by_name && {icon:"👤",label:"Dibooking oleh", val:booking.booked_by_name},
     booking.notes          && {icon:"📝",label:"Catatan",        val:booking.notes},
@@ -1573,7 +1582,16 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
           {rows.map(r=>(
             <div key={r.label} className="flex items-start gap-3">
               <span className="w-8 text-center text-base flex-shrink-0">{r.icon}</span>
-              <div><div className="font-medium text-slate-700">{r.val}</div><div className="text-xs text-slate-400">{r.label}</div></div>
+              <div>
+                {r.isLink
+                  ? <a href={r.val} target="_blank" rel="noopener noreferrer"
+                       className="font-semibold text-blue-600 hover:underline break-all text-sm">
+                      Buka Google Meet →
+                    </a>
+                  : <div className="font-medium text-slate-700">{r.val}</div>
+                }
+                <div className="text-xs text-slate-400">{r.label}</div>
+              </div>
             </div>
           ))}
         </div>
@@ -1828,6 +1846,289 @@ function AccountModal({ currentUser, onClose, onUpdate }) {
   );
 }
 
+// ─── GOOGLE CALENDAR HELPERS ─────────────────────────────────────────────────
+function gcalEventBody(data, roomName, includeConference = false) {
+  const desc = [
+    `🏢 Agent: ${roomName}`,
+    `${data.visit_type === "Offline" ? "📍" : "🌐"} Type Visit: ${data.visit_type || "Online"}`,
+    data.activity   ? `⚡ Activity: ${data.activity}` : "",
+    data.attendees  ? `👥 Peserta: ${data.attendees}` : "",
+    data.notes      ? `📝 Catatan: ${data.notes}` : "",
+  ].filter(Boolean).join("\n");
+  const body = {
+    summary: data.title,
+    description: desc,
+    start: { dateTime: `${data.date}T${data.start_time}:00`, timeZone: GCAL_TIMEZONE },
+    end:   { dateTime: `${data.date}T${data.end_time}:00`,   timeZone: GCAL_TIMEZONE },
+  };
+  if (includeConference) {
+    body.conferenceData = {
+      createRequest: {
+        requestId: `majoo-cs-${data.id || "new-" + Date.now()}`,
+        conferenceSolutionKey: { type: "hangoutsMeet" }
+      }
+    };
+  }
+  return body;
+}
+async function gcalCreateEvent(token, data, roomName) {
+  const res = await fetch(
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1",
+    { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(gcalEventBody(data, roomName, true)) }
+  );
+  if (!res.ok) throw new Error("Google Calendar: " + (await res.text()));
+  const ev = await res.json();
+  const meetLink = ev.conferenceData?.entryPoints?.find(e => e.entryPointType === "video")?.uri || "";
+  return { google_event_id: ev.id, meet_link: meetLink };
+}
+async function gcalUpdateEvent(token, eventId, data, roomName) {
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`,
+    { method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(gcalEventBody(data, roomName, false)) }
+  );
+  if (!res.ok) throw new Error("Google Calendar update: " + (await res.text()));
+}
+async function gcalDeleteEvent(token, eventId) {
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok && res.status !== 404 && res.status !== 410) throw new Error("Google Calendar delete: " + (await res.text()));
+}
+
+// ─── EXPORT MODAL ─────────────────────────────────────────────────────────────
+function ExportModal({ onClose, bookings }) {
+  const today = new Date();
+  const fmt   = d => localDateStr(d);
+
+  // Quick preset helpers
+  const startOfWeek = d => { const r=new Date(d); r.setDate(d.getDate()-(d.getDay()===0?6:d.getDay()-1)); r.setHours(0,0,0,0); return r; };
+  const endOfWeek   = d => { const r=new Date(startOfWeek(d)); r.setDate(r.getDate()+6); return r; };
+  const startOfMonth= d => new Date(d.getFullYear(),d.getMonth(),1);
+  const endOfMonth  = d => new Date(d.getFullYear(),d.getMonth()+1,0);
+
+  const PRESETS = [
+    { label:"Hari Ini",        fn:()=>({ s:fmt(today),              e:fmt(today) }) },
+    { label:"Kemarin",         fn:()=>{ const d=new Date(today); d.setDate(d.getDate()-1); return {s:fmt(d),e:fmt(d)}; } },
+    { label:"7 Hari Terakhir", fn:()=>{ const d=new Date(today); d.setDate(d.getDate()-6); return {s:fmt(d),e:fmt(today)}; } },
+    { label:"Minggu Ini",      fn:()=>({ s:fmt(startOfWeek(today)), e:fmt(endOfWeek(today)) }) },
+    { label:"Minggu Lalu",     fn:()=>{ const d=new Date(startOfWeek(today)); d.setDate(d.getDate()-7); const e=new Date(d); e.setDate(e.getDate()+6); return {s:fmt(d),e:fmt(e)}; } },
+    { label:"30 Hari Terakhir",fn:()=>{ const d=new Date(today); d.setDate(d.getDate()-29); return {s:fmt(d),e:fmt(today)}; } },
+    { label:"Bulan Ini",       fn:()=>({ s:fmt(startOfMonth(today)),e:fmt(endOfMonth(today)) }) },
+    { label:"Bulan Lalu",      fn:()=>{ const d=new Date(today.getFullYear(),today.getMonth()-1,1); return {s:fmt(d),e:fmt(endOfMonth(d))}; } },
+  ];
+
+  const [startDate,   setStartDate]   = useState(fmt(startOfWeek(today)));
+  const [endDate,     setEndDate]     = useState(fmt(endOfWeek(today)));
+  const [hovered,     setHovered]     = useState(null);
+  const [selecting,   setSelecting]   = useState(false); // false=pick start, true=pick end
+  const [leftMonth,   setLeftMonth]   = useState(new Date(today.getFullYear(), today.getMonth()-1, 1));
+  const [activePreset,setActivePreset]= useState("Minggu Ini");
+  const [exporting,   setExporting]   = useState(false);
+
+  const rightMonth = new Date(leftMonth.getFullYear(), leftMonth.getMonth()+1, 1);
+
+  const applyPreset = p => {
+    const {s,e} = p.fn();
+    setStartDate(s); setEndDate(e);
+    setSelecting(false);
+    setActivePreset(p.label);
+  };
+
+  const handleDayClick = dateStr => {
+    setActivePreset(null);
+    if (!selecting) {
+      setStartDate(dateStr); setEndDate(dateStr); setSelecting(true);
+    } else {
+      if (dateStr < startDate) { setStartDate(dateStr); setEndDate(startDate); }
+      else                       { setEndDate(dateStr); }
+      setSelecting(false);
+    }
+  };
+
+  const isInRange = dateStr => {
+    const base = selecting && hovered
+      ? (hovered >= startDate ? [startDate, hovered] : [hovered, startDate])
+      : [startDate, endDate];
+    return dateStr >= base[0] && dateStr <= base[1];
+  };
+
+  const filtered = bookings.filter(b => b.date >= startDate && b.date <= endDate);
+
+  const doExport = () => {
+    setExporting(true);
+    try {
+      const rows = filtered.map((b, i) => {
+        const room     = ROOMS.find(r => r.id === b.room_id);
+        const dateObj  = new Date(b.date + "T00:00");
+        const hari     = dateObj.toLocaleDateString("id-ID", { weekday:"long" });
+        const durMin   = toMin(b.end_time) - toMin(b.start_time);
+        const durJam   = (durMin / 60).toFixed(1);
+        return {
+          "No":              i + 1,
+          "Tanggal":         b.date,
+          "Hari":            hari,
+          "Agent":           room?.name    || "",
+          "Kota":            room?.city    || "",
+          "Area":            room?.area    || "",
+          "Type Visit":      b.visit_type  || "",
+          "Activity":        b.activity    || "",
+          "Judul Meeting":   b.title       || "",
+          "Jam Mulai":       b.start_time  || "",
+          "Jam Selesai":     b.end_time    || "",
+          "Durasi (Jam)":    parseFloat(durJam),
+          "Peserta":         b.attendees   || "",
+          "Catatan":         b.notes       || "",
+          "Status Jadwal":   b.status_jadwal    || "",
+          "Status Assignment": b.status_assignment || "",
+          "Dibooking Oleh":  b.booked_by_name  || "",
+          "Email":           b.booked_by_email || "",
+        };
+      });
+
+      const ws = XLSX.utils.json_to_sheet(rows);
+
+      // Column widths
+      ws["!cols"] = [
+        {wch:5},{wch:12},{wch:10},{wch:28},{wch:14},{wch:14},{wch:10},{wch:30},
+        {wch:30},{wch:10},{wch:10},{wch:12},{wch:25},{wch:25},{wch:22},{wch:20},{wch:22},{wch:28},
+      ];
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Booking CS");
+      const fileName = `CS_Booking_${startDate}_sd_${endDate}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+    } catch(e) { alert("Gagal export: " + e.message); }
+    setExporting(false);
+    onClose();
+  };
+
+  // Render mini calendar month
+  const renderMonth = (monthDate) => {
+    const year = monthDate.getFullYear(), month = monthDate.getMonth();
+    const first = new Date(year, month, 1).getDay();
+    const offset = first === 0 ? 6 : first - 1;
+    const days   = new Date(year, month+1, 0).getDate();
+    const cells  = Array(offset).fill(null).concat(Array.from({length:days},(_,i)=>i+1));
+    while (cells.length % 7 !== 0) cells.push(null);
+
+    return (
+      <div className="flex-1">
+        <div className="text-center font-bold text-slate-700 mb-3">
+          {monthDate.toLocaleDateString("id-ID",{month:"long",year:"numeric"})}
+        </div>
+        <div className="grid grid-cols-7 gap-0.5 mb-1">
+          {["Sen","Sel","Rab","Kam","Jum","Sab","Min"].map(d=>(
+            <div key={d} className="text-center text-xs text-slate-400 font-semibold py-1">{d}</div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7 gap-0.5">
+          {cells.map((day, idx) => {
+            if (!day) return <div key={idx}/>;
+            const dateStr = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+            const inRange = isInRange(dateStr);
+            const isStart = dateStr === startDate;
+            const isEnd   = dateStr === (selecting && hovered ? (hovered >= startDate ? hovered : startDate) : endDate);
+            const isTod   = dateStr === fmt(today);
+            const isPast  = dateStr < fmt(today);
+            return (
+              <button key={idx} onClick={() => handleDayClick(dateStr)}
+                onMouseEnter={() => selecting && setHovered(dateStr)}
+                onMouseLeave={() => selecting && setHovered(null)}
+                className={`text-center text-xs py-1.5 rounded-lg transition-all font-medium
+                  ${isStart||isEnd ? "text-white font-bold" : ""}
+                  ${inRange && !isStart && !isEnd ? "bg-teal-50 text-teal-700 rounded-none" : ""}
+                  ${!inRange && !isStart && !isEnd ? (isTod ? "text-teal-600 font-bold" : isPast ? "text-slate-300" : "text-slate-600 hover:bg-slate-100") : ""}
+                `}
+                style={(isStart||isEnd) ? {backgroundColor:"#2DBDB6"} : {}}>
+                {day}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const fmtDisplay = d => new Date(d+"T00:00").toLocaleDateString("id-ID",{day:"numeric",month:"short",year:"numeric"});
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center modal-overlay bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden fade-in" onClick={e=>e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-800">📊 Export Data Booking</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Pilih rentang tanggal lalu export ke Excel</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
+        </div>
+
+        <div className="flex">
+          {/* Left: presets */}
+          <div className="w-44 border-r border-slate-100 p-3 flex-shrink-0">
+            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-2">Preset</div>
+            <div className="space-y-0.5">
+              {PRESETS.map(p => (
+                <button key={p.label} onClick={() => applyPreset(p)}
+                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors font-medium
+                    ${activePreset===p.label
+                      ? "bg-teal-500 text-white"
+                      : "text-slate-600 hover:bg-slate-50"}`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Right: dual calendar */}
+          <div className="flex-1 p-5">
+            {/* Month navigation */}
+            <div className="flex items-center justify-between mb-4">
+              <button onClick={()=>setLeftMonth(new Date(leftMonth.getFullYear(),leftMonth.getMonth()-1,1))}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 transition-colors">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <button onClick={()=>setLeftMonth(new Date(leftMonth.getFullYear(),leftMonth.getMonth()+1,1))}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 transition-colors ml-auto">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            </div>
+
+            {/* Two months */}
+            <div className="flex gap-6">
+              {renderMonth(leftMonth)}
+              <div className="w-px bg-slate-100 flex-shrink-0"/>
+              {renderMonth(rightMonth)}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between">
+          <div className="text-sm text-slate-600">
+            <span className="font-semibold text-teal-600">{fmtDisplay(startDate)}</span>
+            <span className="text-slate-400 mx-2">→</span>
+            <span className="font-semibold text-teal-600">{fmtDisplay(endDate)}</span>
+            <span className="text-slate-400 ml-3">·</span>
+            <span className="ml-2 text-slate-500"><strong className="text-slate-700">{filtered.length}</strong> data</span>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">Batal</button>
+            <button onClick={doExport} disabled={exporting || filtered.length === 0}
+              className="px-5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-sm font-bold transition-colors disabled:opacity-50 flex items-center gap-2 shadow-sm">
+              {exporting ? "Mengexport..." : `⬇ Export Excel (${filtered.length})`}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 function App() {
   const [currentUser,   setCurrentUser]   = useState(()=>loadSession());
@@ -1841,7 +2142,12 @@ function App() {
     }
     return ROOMS.map(r => r.id);
   });
+  const [exportOpen,    setExportOpen]    = useState(false);
   const [holidayOpen,   setHolidayOpen]   = useState(false);
+  const [googleToken,   setGoogleToken]   = useState(null);
+  const [gcalExpiry,    setGcalExpiry]    = useState(0);
+  const [gcalConnecting,setGcalConnecting]= useState(false);
+  const tokenClientRef = React.useRef(null);
   const [baseDate,      setBaseDate]      = useState(new Date());
   const [modalOpen,     setModalOpen]     = useState(false);
   const [modalInit,     setModalInit]     = useState(null);
@@ -1876,12 +2182,46 @@ function App() {
   // Auto-load saat login
   useEffect(()=>{ if (currentUser) { loadBookings(); loadHolidays(); } },[currentUser]);
 
+  // Init Google Identity Services
+  useEffect(() => {
+    if (GCAL_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID_HERE") return; // belum dikonfigurasi
+    const tryInit = () => {
+      if (window.google?.accounts?.oauth2) {
+        tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
+          client_id: GCAL_CLIENT_ID,
+          scope: GCAL_SCOPE,
+          callback: (resp) => {
+            setGcalConnecting(false);
+            if (resp.access_token) {
+              setGoogleToken(resp.access_token);
+              setGcalExpiry(Date.now() + (resp.expires_in - 60) * 1000);
+              addToast({ icon:"📅", title:"Google Calendar terhubung", message:"Booking baru akan otomatis masuk ke Google Calendar.", color:"#10b981" });
+            } else {
+              addToast({ icon:"❌", title:"Gagal connect Google", message:resp.error||"Unknown error", color:"#ef4444" });
+            }
+          }
+        });
+      } else { setTimeout(tryInit, 500); }
+    };
+    tryInit();
+  }, []);
+
   // Realtime — poll setiap 30 detik sebagai fallback
   useEffect(()=>{
     if (!currentUser) return;
     const interval = setInterval(loadBookings, 30000);
     return () => clearInterval(interval);
   },[currentUser]);
+
+  const getGoogleToken = () => (googleToken && Date.now() < gcalExpiry) ? googleToken : null;
+  const connectGoogleCal = () => {
+    if (!tokenClientRef.current) {
+      addToast({ icon:"⚠️", title:"Google belum siap", message:"Tunggu sebentar dan coba lagi.", color:"#f59e0b" });
+      return;
+    }
+    setGcalConnecting(true);
+    tokenClientRef.current.requestAccessToken();
+  };
 
   const login = user => {
     saveSession(user);
@@ -1947,7 +2287,12 @@ function App() {
 
   const handleSave = async data => {
     try {
+      const gToken  = getGoogleToken();
+      const room    = ROOMS.find(r => r.id === data.room_id);
+      const rName   = room?.name || "";
+
       if (data.id) {
+        // ── UPDATE ──────────────────────────────────────────────
         const updated = await supa.update("bookings", data.id, {
           room_id: data.room_id, title: data.title, date: data.date,
           start_time: data.start_time, end_time: data.end_time,
@@ -1959,8 +2304,22 @@ function App() {
         });
         setBookings(p=>p.map(b=>b.id===data.id?(updated[0]||data):b));
         notify("update", data);
+        // Update event di Google Calendar jika ada
+        if (gToken && data.google_event_id) {
+          try { await gcalUpdateEvent(gToken, data.google_event_id, data, rName); }
+          catch (e) { addToast({ icon:"⚠️", title:"Google Calendar", message:"Booking disimpan, tapi gagal update di Google Calendar.", color:"#f59e0b" }); }
+        }
       } else {
+        // ── CREATE ──────────────────────────────────────────────
         const newId = "bk-"+Date.now();
+        let gcalFields = { google_event_id: "", meet_link: "" };
+        if (gToken) {
+          try {
+            gcalFields = await gcalCreateEvent(gToken, { ...data, id: newId }, rName);
+          } catch (e) {
+            addToast({ icon:"⚠️", title:"Google Calendar", message:"Booking disimpan, tapi gagal buat event di Google Calendar.", color:"#f59e0b" });
+          }
+        }
         const inserted = await supa.insert("bookings", {
           id: newId, room_id: data.room_id, title: data.title, date: data.date,
           start_time: data.start_time, end_time: data.end_time,
@@ -1969,9 +2328,13 @@ function App() {
           visit_type: data.visit_type || "Online", activity: data.activity || "",
           status_jadwal: data.status_jadwal || "",
           status_assignment: "Need Assign CRM",
+          ...gcalFields,
         });
-        setBookings(p=>[...p, inserted[0]||{...data,id:newId}]);
+        setBookings(p=>[...p, inserted[0]||{...data,id:newId,...gcalFields}]);
         notify("create", data);
+        if (gcalFields.meet_link) {
+          addToast({ icon:"🎥", title:"Google Meet siap!", message:"Link meeting tersedia di detail booking.", color:"#10b981" });
+        }
         // Email notifikasi booking dinonaktifkan
       }
       setModalOpen(false);
@@ -1988,6 +2351,11 @@ function App() {
       setModalOpen(false);
       setDetailBooking(null);
       if (b) notify("delete", b);
+      // Hapus juga dari Google Calendar jika ada
+      const gToken = getGoogleToken();
+      if (gToken && b?.google_event_id) {
+        try { await gcalDeleteEvent(gToken, b.google_event_id); } catch {}
+      }
     } catch(e) {
       addToast({ icon:"❌", title:"Gagal menghapus", message:e.message, color:"#ef4444" });
     }
@@ -2082,12 +2450,26 @@ function App() {
             <span className="text-xs text-slate-400 hidden sm:block">{currentUser.role==="admin"?"Admin":currentUser.role==="cs"?"CS Agent":"Employee"}</span>
             <button onClick={e=>{e.stopPropagation();logout();}} className="text-xs text-red-400 hover:text-red-600 hidden sm:block">Keluar</button>
           </button>
-          {currentUser?.role==="admin" && (
+          {currentUser?.role==="admin" && (<>
+            {GCAL_CLIENT_ID !== "YOUR_GOOGLE_CLIENT_ID_HERE" && (
+              <button onClick={connectGoogleCal} disabled={gcalConnecting}
+                title={getGoogleToken() ? "Google Calendar terhubung — klik untuk refresh token" : "Hubungkan ke Google Calendar"}
+                className={`flex items-center gap-1.5 text-white text-sm font-semibold px-3 py-2 rounded-xl shadow-sm transition-colors disabled:opacity-60 ${
+                  getGoogleToken() ? "bg-green-500 hover:bg-green-600" : "bg-slate-500 hover:bg-slate-600"
+                }`}>
+                {gcalConnecting ? "⏳" : getGoogleToken() ? "📅✓" : "📅"}
+                <span className="hidden sm:inline">{gcalConnecting ? "Menghubungkan..." : getGoogleToken() ? "GCal" : "Connect GCal"}</span>
+              </button>
+            )}
+            <button onClick={()=>setExportOpen(true)}
+              className="flex items-center gap-1.5 bg-teal-500 hover:bg-teal-600 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
+              📊 Export
+            </button>
             <button onClick={()=>setHolidayOpen(true)}
               className="flex items-center gap-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
               🏖️ Libur
             </button>
-          )}
+          </>)}
           <button onClick={()=>openNew()}
             className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
             <span className="text-base leading-none">+</span> Booking
@@ -2160,6 +2542,7 @@ function App() {
       )}
 
       {notifOpen && <NotifPanel logs={notifLogs} onClose={()=>setNotifOpen(false)} onMarkAllRead={markAllRead} onClearAll={clearAllNotifs}/>}
+      {exportOpen && <ExportModal onClose={()=>setExportOpen(false)} bookings={bookings}/>}
       {holidayOpen && <HolidayModal isOpen={holidayOpen} onClose={()=>setHolidayOpen(false)}
         holidays={holidays} onSave={loadHolidays} onDelete={loadHolidays} currentUser={currentUser}/>}
       {accountOpen && <AccountModal currentUser={currentUser} onClose={()=>setAccountOpen(false)} onUpdate={u=>{updateUser(u);setAccountOpen(false);addToast({icon:"✅",title:"Profil diperbarui",message:"Data akun berhasil disimpan.",color:"#10b981"});}}/>}
