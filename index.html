@@ -211,8 +211,15 @@ const ADMIN_EMAILS = [
   "andi@majoo.id",
   "suro@majoo.id",
   "taufiq.hadiyanto@majoo.id",
-  "rahmat.hidayat@majoo.id",
+  // rahmat.hidayat@majoo.id dipindah ke CS_AGENT_MAP
 ];
+
+// ─── CUSTOMER SUPPORT ROLE ────────────────────────────────────────────────────
+// Mapping email CS Agent → room_id (agent mereka di ROOMS)
+const CS_AGENT_MAP = {
+  "rahmat.hidayat@majoo.id": 21, // Rahmat Hidayat — Medan
+};
+const CS_EMAILS = Object.keys(CS_AGENT_MAP);
 
 // ─── ACTIVITY LIST ────────────────────────────────────────────────────────────
 // type: "Online" | "Offline" | "Both"   duration: jam (desimal)
@@ -462,7 +469,9 @@ function LoginScreen({ onLogin }) {
       if (result === "expired")   { setError("Kode OTP sudah kadaluarsa. Kirim ulang."); setLoading(false); return; }
       if (result !== "ok")        { setError("Kode OTP salah. Periksa kembali."); setLoading(false); return; }
       const initials = name.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
-      const role = ADMIN_EMAILS.includes(email) ? "admin" : "user";
+      const role = ADMIN_EMAILS.includes(email) ? "admin"
+               : CS_EMAILS.includes(email)     ? "cs"
+               : "user";
       await supa.insert("users", { id: "u-"+Date.now(), name, email, role, password_hash: password });
       setSuccess("Akun berhasil dibuat! Silakan masuk.");
       setEmail(""); setPassword(""); setConfirm(""); setName(""); setOtp("");
@@ -639,6 +648,17 @@ function LoginScreen({ onLogin }) {
 const AREAS = ["Jabodetabek", "Sumkalsulpap", "Jabalnusra"];
 const AREA_COLORS = { Jabodetabek:"#3b82f6", Sumkalsulpap:"#10b981", Jabalnusra:"#f97316" };
 
+// ─── STATUS CONSTANTS ─────────────────────────────────────────────────────────
+const STATUS_JADWAL_OPTS   = ["On Progress Follow Up", "Fixed"];
+const STATUS_JADWAL_CFG    = {
+  "On Progress Follow Up": { color:"#f59e0b", bg:"#fef3c7", label:"⏳ On Progress" },
+  "Fixed":                  { color:"#10b981", bg:"#d1fae5", label:"✅ Fixed" },
+};
+const STATUS_ASSIGN_CFG    = {
+  "Need Assign CRM":  { color:"#ef4444", bg:"#fee2e2", label:"🔴 Need Assign CRM" },
+  "Done Assign CRM":  { color:"#10b981", bg:"#d1fae5", label:"✅ Done Assign CRM" },
+};
+
 function RoomSidebar({ rooms, selectedRooms, onToggle }) {
   const [openArea, setOpenArea] = React.useState({Jabodetabek:true,Sumkalsulpap:true,Jabalnusra:true});
   const toggleArea = area => setOpenArea(p=>({...p,[area]:!p[area]}));
@@ -713,7 +733,22 @@ function BookingChip({ booking, room, currentUser, col, totalCols, onClick }) {
       <div className="font-semibold truncate leading-tight">{booking.title}</div>
       {height>28 && booking.activity && <div className="text-xs opacity-80 truncate">{booking.activity}</div>}
       {height>40 && <div className="text-xs opacity-70 truncate">{booking.start_time}–{booking.end_time}{booking.visit_type ? ` · ${booking.visit_type==="Online"?"🌐":"📍"}` : ""}</div>}
-      {height>56 && isOwn && <div className="text-xs opacity-60 truncate">📌 Saya</div>}
+      {height>54 && (
+        <div className="flex flex-wrap gap-0.5 mt-0.5">
+          {booking.status_jadwal && STATUS_JADWAL_CFG[booking.status_jadwal] && (
+            <span className="text-[9px] font-bold px-1 py-0.5 rounded leading-none truncate"
+              style={{backgroundColor:STATUS_JADWAL_CFG[booking.status_jadwal].bg, color:STATUS_JADWAL_CFG[booking.status_jadwal].color}}>
+              {STATUS_JADWAL_CFG[booking.status_jadwal].label}
+            </span>
+          )}
+          {booking.status_assignment && STATUS_ASSIGN_CFG[booking.status_assignment] && (
+            <span className="text-[9px] font-bold px-1 py-0.5 rounded leading-none truncate"
+              style={{backgroundColor:STATUS_ASSIGN_CFG[booking.status_assignment].bg, color:STATUS_ASSIGN_CFG[booking.status_assignment].color}}>
+              {STATUS_ASSIGN_CFG[booking.status_assignment].label}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1210,9 +1245,9 @@ function HolidayModal({ isOpen, onClose, holidays, onSave, onDelete, currentUser
 }
 
 // ─── BOOKING MODAL ────────────────────────────────────────────────────────────
-function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, bookings, currentUser, holidays }) {
+function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, bookings, currentUser, holidays, lockedRoomId }) {
   const isEdit = !!initialData?.id;
-  const blank  = { room_id:rooms[0]?.id, title:"", date:todayStr(), start_time:"09:00", end_time:"10:00", attendees:"", notes:"", visit_type:"Online", activity:"" };
+  const blank  = { room_id:rooms[0]?.id, title:"", date:todayStr(), start_time:"09:00", end_time:"10:00", attendees:"", notes:"", visit_type:"Online", activity:"", status_jadwal:"", status_assignment:"Need Assign CRM" };
   const [form,     setForm]     = useState(blank);
   const [conflict, setConflict] = useState(null);
   const [loading,  setLoading]  = useState(false);
@@ -1322,7 +1357,27 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
               onChange={e=>set("title",e.target.value)} disabled={!canEdit}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50"/>
           </div>
-          <AreaAgentPicker rooms={rooms} form={form} set={set} canEdit={canEdit}/>
+          {lockedRoomId ? (
+            /* CS Role: tampilkan agent readonly */
+            (() => {
+              const myRoom = rooms.find(r => r.id === lockedRoomId);
+              return myRoom ? (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">Customer Support Agent</label>
+                  <div className="flex items-center gap-2.5 rounded-xl p-3 border-2"
+                    style={{borderColor:myRoom.colorHex, backgroundColor:myRoom.colorHex+"12"}}>
+                    <span className="w-3 h-3 rounded-full flex-shrink-0" style={{backgroundColor:myRoom.colorHex}}/>
+                    <div>
+                      <div className="text-sm font-bold text-slate-800">{myRoom.name}</div>
+                      <div className="text-xs text-slate-500">📍 {myRoom.city} · {myRoom.area}</div>
+                    </div>
+                  </div>
+                </div>
+              ) : null;
+            })()
+          ) : (
+            <AreaAgentPicker rooms={rooms} form={form} set={set} canEdit={canEdit}/>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <div className="col-span-3 sm:col-span-1">
               <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Tanggal *</label>
@@ -1364,6 +1419,61 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
               rows={2} disabled={!canEdit}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none disabled:bg-slate-50"/>
           </div>
+
+          {/* ── Status Jadwal ── */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Status Jadwal</label>
+            <div className="flex gap-2">
+              {STATUS_JADWAL_OPTS.map(s => {
+                const cfg = STATUS_JADWAL_CFG[s];
+                const isOn = form.status_jadwal === s;
+                return (
+                  <button type="button" key={s} disabled={!canEdit}
+                    onClick={() => set("status_jadwal", isOn ? "" : s)}
+                    className="flex-1 py-2 rounded-lg border-2 text-xs font-semibold transition-all"
+                    style={isOn
+                      ? { borderColor:cfg.color, backgroundColor:cfg.bg, color:cfg.color }
+                      : { borderColor:"#e2e8f0", backgroundColor:"#f8fafc", color:"#94a3b8" }}>
+                    {cfg.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── Status Assignment (admin only saat edit) ── */}
+          {currentUser?.role === "admin" && isEdit && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Status Assignment</label>
+              <div className="flex gap-2">
+                {Object.entries(STATUS_ASSIGN_CFG).map(([key, cfg]) => {
+                  const isOn = form.status_assignment === key;
+                  return (
+                    <button type="button" key={key}
+                      onClick={() => set("status_assignment", key)}
+                      className="flex-1 py-2 rounded-lg border-2 text-xs font-semibold transition-all"
+                      style={isOn
+                        ? { borderColor:cfg.color, backgroundColor:cfg.bg, color:cfg.color }
+                        : { borderColor:"#e2e8f0", backgroundColor:"#f8fafc", color:"#94a3b8" }}>
+                      {cfg.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Readonly status assignment untuk non-admin */}
+          {currentUser?.role !== "admin" && form.status_assignment && STATUS_ASSIGN_CFG[form.status_assignment] && (
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Status Assignment:</label>
+              <span className="text-xs font-bold px-2 py-1 rounded-full"
+                style={{backgroundColor:STATUS_ASSIGN_CFG[form.status_assignment].bg, color:STATUS_ASSIGN_CFG[form.status_assignment].color}}>
+                {STATUS_ASSIGN_CFG[form.status_assignment].label}
+              </span>
+            </div>
+          )}
+
           {isEdit && initialData?.booked_by_name && (
             <div className="text-xs text-slate-400">👤 Dibooking oleh: <span className="font-medium text-slate-600">{initialData.booked_by_name}</span></div>
           )}
@@ -1391,10 +1501,23 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
 }
 
 // ─── DETAIL MODAL ─────────────────────────────────────────────────────────────
-function DetailModal({ booking, room, onClose, onEdit, onDelete, currentUser }) {
+function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus, currentUser }) {
   if (!booking) return null;
+  const [updatingStatus, setUpdatingStatus] = useState(false);
   const isOwner = booking.booked_by_email === currentUser?.email;
   const canAct  = isOwner || currentUser?.role === "admin";
+  const isAdmin = currentUser?.role === "admin";
+
+  const jadwalCfg = STATUS_JADWAL_CFG[booking.status_jadwal];
+  const assignCfg = STATUS_ASSIGN_CFG[booking.status_assignment];
+
+  const handleToggleAssign = async () => {
+    const next = booking.status_assignment === "Need Assign CRM" ? "Done Assign CRM" : "Need Assign CRM";
+    setUpdatingStatus(true);
+    await onUpdateStatus(booking.id, { status_assignment: next });
+    setUpdatingStatus(false);
+  };
+
   const rows = [
     {icon:"🏢", label:"Agent",   val:room.name + (room.city ? ` — 📍 ${room.city}` : "")},
     booking.visit_type && {icon: booking.visit_type==="Online"?"🌐":"📍", label:"Type Visit", val: booking.visit_type},
@@ -1411,9 +1534,30 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, currentUser }) 
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
         <div className="h-2" style={{backgroundColor:room.colorHex}}/>
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-          <h2 className="text-base font-bold text-slate-800">{booking.title}</h2>
+          <h2 className="text-base font-bold text-slate-800 pr-2">{booking.title}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
         </div>
+
+        {/* Status badges row */}
+        <div className="px-6 pt-4 flex flex-wrap gap-2">
+          {jadwalCfg ? (
+            <span className="text-xs font-bold px-2.5 py-1 rounded-full"
+              style={{backgroundColor:jadwalCfg.bg, color:jadwalCfg.color}}>
+              {jadwalCfg.label}
+            </span>
+          ) : (
+            <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-100 text-slate-400">
+              ⬜ Status belum diset
+            </span>
+          )}
+          {assignCfg && (
+            <span className="text-xs font-bold px-2.5 py-1 rounded-full"
+              style={{backgroundColor:assignCfg.bg, color:assignCfg.color}}>
+              {assignCfg.label}
+            </span>
+          )}
+        </div>
+
         <div className="p-6 space-y-3 text-sm">
           {rows.map(r=>(
             <div key={r.label} className="flex items-start gap-3">
@@ -1422,6 +1566,23 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, currentUser }) 
             </div>
           ))}
         </div>
+
+        {/* Admin: quick toggle status assignment */}
+        {isAdmin && (
+          <div className="mx-6 mb-4 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+            <div className="text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wider">Update Status Assignment</div>
+            <button onClick={handleToggleAssign} disabled={updatingStatus}
+              className="w-full py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
+              style={booking.status_assignment === "Need Assign CRM"
+                ? { backgroundColor: STATUS_ASSIGN_CFG["Done Assign CRM"].bg, color: STATUS_ASSIGN_CFG["Done Assign CRM"].color, border: `1.5px solid ${STATUS_ASSIGN_CFG["Done Assign CRM"].color}` }
+                : { backgroundColor: STATUS_ASSIGN_CFG["Need Assign CRM"].bg, color: STATUS_ASSIGN_CFG["Need Assign CRM"].color, border: `1.5px solid ${STATUS_ASSIGN_CFG["Need Assign CRM"].color}` }}>
+              {updatingStatus ? "Menyimpan..." : booking.status_assignment === "Need Assign CRM"
+                ? "→ Tandai Done Assign CRM"
+                : "→ Kembalikan ke Need Assign CRM"}
+            </button>
+          </div>
+        )}
+
         {!canAct && (
           <div className="mx-6 mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800">
             Booking ini milik <strong>{booking.booked_by_name||"karyawan lain"}</strong>. Hanya pemilik atau Admin yang dapat mengubahnya.
@@ -1429,7 +1590,7 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, currentUser }) 
         )}
         <div className="px-6 pb-5 flex gap-2">
           <button onClick={onClose} className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">Tutup</button>
-          {canAct && currentUser?.role==="admin" && (
+          {canAct && isAdmin && (
             <button onClick={()=>onEdit(booking)} className="flex-1 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700">Edit</button>
           )}
           {canAct && (
@@ -1661,7 +1822,14 @@ function App() {
   const [currentUser,   setCurrentUser]   = useState(()=>loadSession());
   const [bookings,      setBookings]      = useState([]);
   const [holidays,      setHolidays]      = useState([]);
-  const [selectedRooms, setSelectedRooms] = useState(ROOMS.map(r=>r.id));
+  const [selectedRooms, setSelectedRooms] = useState(() => {
+    const u = loadSession();
+    if (u?.role === "cs") {
+      const rid = CS_AGENT_MAP[u.email];
+      return rid ? [rid] : [];
+    }
+    return ROOMS.map(r => r.id);
+  });
   const [holidayOpen,   setHolidayOpen]   = useState(false);
   const [baseDate,      setBaseDate]      = useState(new Date());
   const [modalOpen,     setModalOpen]     = useState(false);
@@ -1704,7 +1872,17 @@ function App() {
     return () => clearInterval(interval);
   },[currentUser]);
 
-  const login = user => { saveSession(user); setCurrentUser(user); setNotifLogs(loadNotifLogs(user.id)); };
+  const login = user => {
+    saveSession(user);
+    setCurrentUser(user);
+    setNotifLogs(loadNotifLogs(user.id));
+    if (user.role === "cs") {
+      const rid = CS_AGENT_MAP[user.email];
+      setSelectedRooms(rid ? [rid] : []);
+    } else {
+      setSelectedRooms(ROOMS.map(r => r.id));
+    }
+  };
   const logout = () => { saveSession(null); setCurrentUser(null); setBookings([]); setNotifLogs([]); };
   const updateUser = user => { saveSession(user); setCurrentUser(user); };
 
@@ -1734,17 +1912,22 @@ function App() {
     if (currentUser) saveNotifLogs(currentUser.id, []);
   };
 
-  const toggleRoom = id => setSelectedRooms(p=>
-    p.includes(id)?(p.length>1?p.filter(r=>r!==id):p):[...p,id]
-  );
+  // Untuk CS role: room yang terkunci ke agent mereka
+  const csRoomId = currentUser?.role === "cs" ? CS_AGENT_MAP[currentUser.email] : null;
+
+  const toggleRoom = id => {
+    if (currentUser?.role === "cs") return; // CS tidak bisa ubah filter
+    setSelectedRooms(p => p.includes(id) ? (p.length>1 ? p.filter(r=>r!==id) : p) : [...p,id]);
+  };
 
   const prevWeek = ()=>{ const d=new Date(baseDate); d.setDate(d.getDate()-7); setBaseDate(d); };
   const nextWeek = ()=>{ const d=new Date(baseDate); d.setDate(d.getDate()+7); setBaseDate(d); };
 
   const openNew = (date, startTime) => {
-    setModalInit({room_id:selectedRooms[0]||ROOMS[0].id,title:"",date:date||todayStr(),
-      start_time:startTime||"09:00",end_time:startTime?addHour(startTime):"10:00",
-      attendees:"",notes:"",visit_type:"Online",activity:""});
+    const defaultRoom = csRoomId || selectedRooms[0] || ROOMS[0].id;
+    setModalInit({room_id: defaultRoom, title:"", date:date||todayStr(),
+      start_time:startTime||"09:00", end_time:startTime?addHour(startTime):"10:00",
+      attendees:"", notes:"", visit_type:"Online", activity:""});
     setModalOpen(true);
   };
   const openEdit = b => { setDetailBooking(null); setModalInit({...b}); setModalOpen(true); };
@@ -1758,6 +1941,8 @@ function App() {
           attendees: data.attendees, notes: data.notes,
           booked_by_name: data.booked_by_name, booked_by_email: data.booked_by_email,
           visit_type: data.visit_type || "Online", activity: data.activity || "",
+          status_jadwal: data.status_jadwal || "",
+          status_assignment: data.status_assignment || "Need Assign CRM",
         });
         setBookings(p=>p.map(b=>b.id===data.id?(updated[0]||data):b));
         notify("update", data);
@@ -1769,6 +1954,8 @@ function App() {
           attendees: data.attendees||"", notes: data.notes||"",
           booked_by_name: data.booked_by_name, booked_by_email: data.booked_by_email,
           visit_type: data.visit_type || "Online", activity: data.activity || "",
+          status_jadwal: data.status_jadwal || "",
+          status_assignment: "Need Assign CRM",
         });
         setBookings(p=>[...p, inserted[0]||{...data,id:newId}]);
         notify("create", data);
@@ -1790,6 +1977,24 @@ function App() {
       if (b) notify("delete", b);
     } catch(e) {
       addToast({ icon:"❌", title:"Gagal menghapus", message:e.message, color:"#ef4444" });
+    }
+  };
+
+  // Update status field saja (status_jadwal atau status_assignment)
+  const handleUpdateStatus = async (id, fields) => {
+    try {
+      const r = await fetch(`${SUPA_URL}/rest/v1/bookings?id=eq.${id}`, {
+        method: "PATCH",
+        headers: { ...supa.headers, "Prefer": "return=representation" },
+        body: JSON.stringify(fields),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const updated = await r.json();
+      setBookings(p => p.map(b => b.id === id ? { ...b, ...fields } : b));
+      setDetailBooking(p => p ? { ...p, ...fields } : p);
+      addToast({ icon:"✅", title:"Status diperbarui", message: Object.values(fields)[0], color:"#10b981" });
+    } catch(e) {
+      addToast({ icon:"❌", title:"Gagal update status", message:e.message, color:"#ef4444" });
     }
   };
 
@@ -1861,7 +2066,7 @@ function App() {
             }
             <span className="text-xs font-medium text-slate-700 hidden sm:block">{currentUser.name}</span>
             <span className="text-xs text-slate-400 hidden sm:block">·</span>
-            <span className="text-xs text-slate-400 hidden sm:block">{currentUser.role==="admin"?"Admin":"Employee"}</span>
+            <span className="text-xs text-slate-400 hidden sm:block">{currentUser.role==="admin"?"Admin":currentUser.role==="cs"?"CS Agent":"Employee"}</span>
             <button onClick={e=>{e.stopPropagation();logout();}} className="text-xs text-red-400 hover:text-red-600 hidden sm:block">Keluar</button>
           </button>
           {currentUser?.role==="admin" && (
@@ -1878,7 +2083,34 @@ function App() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <RoomSidebar rooms={ROOMS} selectedRooms={selectedRooms} onToggle={toggleRoom}/>
+        {currentUser?.role === "cs" ? (
+          /* ── CS Agent: sidebar mini menampilkan info agent mereka ── */
+          (() => {
+            const myRoom = ROOMS.find(r => r.id === csRoomId);
+            if (!myRoom) return null;
+            return (
+              <aside className="w-52 flex-shrink-0 border-r border-slate-200 bg-white flex flex-col">
+                <div className="px-4 py-3 border-b border-slate-100">
+                  <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Agent Saya</div>
+                  <div className="rounded-xl p-3 border-2" style={{borderColor:myRoom.colorHex,backgroundColor:myRoom.colorHex+"12"}}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="w-3 h-3 rounded-full flex-shrink-0" style={{backgroundColor:myRoom.colorHex}}/>
+                      <span className="text-xs font-bold text-slate-800 leading-tight">{myRoom.name}</span>
+                    </div>
+                    <div className="text-xs text-slate-500 pl-5">📍 {myRoom.city}</div>
+                    <div className="text-xs text-slate-400 pl-5 mt-0.5">🗺 {myRoom.area}</div>
+                  </div>
+                </div>
+                <div className="px-4 py-3 text-xs text-slate-400 leading-relaxed">
+                  <div className="font-semibold text-slate-500 mb-1">ℹ️ Info</div>
+                  Tampilan kalender hanya menampilkan jadwal Anda. Booking baru otomatis tercatat untuk agent Anda.
+                </div>
+              </aside>
+            );
+          })()
+        ) : (
+          <RoomSidebar rooms={ROOMS} selectedRooms={selectedRooms} onToggle={toggleRoom}/>
+        )}
         <main className="flex-1 flex flex-col overflow-hidden bg-white">
           {loading && bookings.length===0 ? (
             <div className="flex-1 flex items-center justify-center">
@@ -1897,12 +2129,13 @@ function App() {
 
       <BookingModal isOpen={modalOpen} onClose={()=>setModalOpen(false)}
         onSave={handleSave} onDelete={handleDelete} rooms={ROOMS}
-        initialData={modalInit} bookings={bookings} currentUser={currentUser} holidays={holidays}/>
+        initialData={modalInit} bookings={bookings} currentUser={currentUser} holidays={holidays}
+        lockedRoomId={csRoomId}/>
 
       {detailBooking && (
         <DetailModal booking={detailBooking} room={ROOMS.find(r=>r.id===detailBooking.room_id)}
           onClose={()=>setDetailBooking(null)} onEdit={openEdit}
-          onDelete={handleDelete} currentUser={currentUser}/>
+          onDelete={handleDelete} onUpdateStatus={handleUpdateStatus} currentUser={currentUser}/>
       )}
 
       {notifOpen && <NotifPanel logs={notifLogs} onClose={()=>setNotifOpen(false)} onMarkAllRead={markAllRead} onClearAll={clearAllNotifs}/>}

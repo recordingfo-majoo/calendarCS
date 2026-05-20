@@ -72,6 +72,15 @@ const ROOMS = [
 const AREAS = ["Jabodetabek", "Sumkalsulpap", "Jabalnusra"];
 const AREA_COLORS = { Jabodetabek:"#3b82f6", Sumkalsulpap:"#10b981", Jabalnusra:"#f97316" };
 
+const STATUS_JADWAL_CFG = {
+  "On Progress Follow Up": { color:"#f59e0b", bg:"#fef3c7", label:"⏳ On Progress" },
+  "Fixed":                  { color:"#10b981", bg:"#d1fae5", label:"✅ Fixed" },
+};
+const STATUS_ASSIGN_CFG = {
+  "Need Assign CRM":  { color:"#ef4444", bg:"#fee2e2", label:"🔴 Need Assign CRM" },
+  "Done Assign CRM":  { color:"#10b981", bg:"#d1fae5", label:"✅ Done Assign CRM" },
+};
+
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 function localDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
