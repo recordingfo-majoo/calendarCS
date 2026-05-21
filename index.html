@@ -2147,7 +2147,9 @@ function App() {
   const [googleToken,   setGoogleToken]   = useState(null);
   const [gcalExpiry,    setGcalExpiry]    = useState(0);
   const [gcalConnecting,setGcalConnecting]= useState(false);
-  const tokenClientRef = React.useRef(null);
+  const tokenClientRef  = React.useRef(null);
+  const currentUserRef  = React.useRef(null);  // selalu up-to-date untuk callback async
+  const gcalManualRef   = React.useRef(false);  // true = connect manual (tampilkan toast)
   const [baseDate,      setBaseDate]      = useState(new Date());
   const [modalOpen,     setModalOpen]     = useState(false);
   const [modalInit,     setModalInit]     = useState(null);
@@ -2182,22 +2184,36 @@ function App() {
   // Auto-load saat login
   useEffect(()=>{ if (currentUser) { loadBookings(); loadHolidays(); } },[currentUser]);
 
-  // Init Google Identity Services
+  // Sync currentUserRef agar selalu fresh di dalam callback async
+  useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+
+  // Init Google Identity Services (sekali saja)
   useEffect(() => {
-    if (GCAL_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID_HERE") return; // belum dikonfigurasi
+    if (GCAL_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID_HERE") return;
     const tryInit = () => {
       if (window.google?.accounts?.oauth2) {
         tokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
           client_id: GCAL_CLIENT_ID,
           scope: GCAL_SCOPE,
           callback: (resp) => {
+            const isManual = gcalManualRef.current;
+            gcalManualRef.current = false;
             setGcalConnecting(false);
             if (resp.access_token) {
               setGoogleToken(resp.access_token);
               setGcalExpiry(Date.now() + (resp.expires_in - 60) * 1000);
-              addToast({ icon:"📅", title:"Google Calendar terhubung", message:"Booking baru akan otomatis masuk ke Google Calendar.", color:"#10b981" });
+              const u = currentUserRef.current;
+              if (u) localStorage.setItem(`gcal_${u.id}`, "1");
+              if (isManual) {
+                addToast({ icon:"📅", title:"Google Calendar terhubung", message:"Booking akan otomatis masuk ke Google Calendar kamu.", color:"#10b981" });
+              }
             } else {
-              addToast({ icon:"❌", title:"Gagal connect Google", message:resp.error||"Unknown error", color:"#ef4444" });
+              // Gagal (manual) — tampilkan error; gagal (silent) — clear flag saja
+              const u = currentUserRef.current;
+              if (u) localStorage.removeItem(`gcal_${u.id}`);
+              if (isManual && resp.error) {
+                addToast({ icon:"❌", title:"Gagal connect Google", message:resp.error||"Unknown error", color:"#ef4444" });
+              }
             }
           }
         });
@@ -2205,6 +2221,29 @@ function App() {
     };
     tryInit();
   }, []);
+
+  // Auto-reconnect saat login jika sebelumnya sudah pernah connect
+  useEffect(() => {
+    if (!currentUser) return;
+    if (!localStorage.getItem(`gcal_${currentUser.id}`)) return;
+    // Delay kecil agar GIS selesai load
+    const t = setTimeout(() => {
+      if (tokenClientRef.current) {
+        tokenClientRef.current.requestAccessToken({ prompt: "" }); // silent, no popup
+      }
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [currentUser]);
+
+  // Refresh token otomatis setiap 50 menit agar tidak expired saat sedang aktif
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (!currentUser || !tokenClientRef.current) return;
+      if (!localStorage.getItem(`gcal_${currentUser.id}`)) return;
+      tokenClientRef.current.requestAccessToken({ prompt: "" });
+    }, 50 * 60 * 1000);
+    return () => clearInterval(iv);
+  }, [currentUser]);
 
   // Realtime — poll setiap 30 detik sebagai fallback
   useEffect(()=>{
@@ -2219,8 +2258,9 @@ function App() {
       addToast({ icon:"⚠️", title:"Google belum siap", message:"Tunggu sebentar dan coba lagi.", color:"#f59e0b" });
       return;
     }
+    gcalManualRef.current = true;
     setGcalConnecting(true);
-    tokenClientRef.current.requestAccessToken();
+    tokenClientRef.current.requestAccessToken({ prompt: "consent" }); // paksa popup untuk manual connect
   };
 
   const login = user => {
@@ -2450,17 +2490,19 @@ function App() {
             <span className="text-xs text-slate-400 hidden sm:block">{currentUser.role==="admin"?"Admin":currentUser.role==="cs"?"CS Agent":"Employee"}</span>
             <button onClick={e=>{e.stopPropagation();logout();}} className="text-xs text-red-400 hover:text-red-600 hidden sm:block">Keluar</button>
           </button>
+          {/* Tombol Connect GCal — untuk admin dan cs agent */}
+          {(currentUser?.role==="admin" || currentUser?.role==="cs") && GCAL_CLIENT_ID !== "YOUR_GOOGLE_CLIENT_ID_HERE" && (
+            <button onClick={connectGoogleCal} disabled={gcalConnecting}
+              title={getGoogleToken() ? "Google Calendar terhubung — klik untuk reconnect" : "Hubungkan ke Google Calendar"}
+              className={`flex items-center gap-1.5 text-white text-sm font-semibold px-3 py-2 rounded-xl shadow-sm transition-colors disabled:opacity-60 ${
+                getGoogleToken() ? "bg-green-500 hover:bg-green-600" : "bg-slate-500 hover:bg-slate-600"
+              }`}>
+              {gcalConnecting ? "⏳" : getGoogleToken() ? "📅✓" : "📅"}
+              <span className="hidden sm:inline">{gcalConnecting ? "Menghubungkan..." : getGoogleToken() ? "GCal" : "Connect GCal"}</span>
+            </button>
+          )}
+          {/* Tombol Export & Libur — hanya admin */}
           {currentUser?.role==="admin" && (<>
-            {GCAL_CLIENT_ID !== "YOUR_GOOGLE_CLIENT_ID_HERE" && (
-              <button onClick={connectGoogleCal} disabled={gcalConnecting}
-                title={getGoogleToken() ? "Google Calendar terhubung — klik untuk refresh token" : "Hubungkan ke Google Calendar"}
-                className={`flex items-center gap-1.5 text-white text-sm font-semibold px-3 py-2 rounded-xl shadow-sm transition-colors disabled:opacity-60 ${
-                  getGoogleToken() ? "bg-green-500 hover:bg-green-600" : "bg-slate-500 hover:bg-slate-600"
-                }`}>
-                {gcalConnecting ? "⏳" : getGoogleToken() ? "📅✓" : "📅"}
-                <span className="hidden sm:inline">{gcalConnecting ? "Menghubungkan..." : getGoogleToken() ? "GCal" : "Connect GCal"}</span>
-              </button>
-            )}
             <button onClick={()=>setExportOpen(true)}
               className="flex items-center gap-1.5 bg-teal-500 hover:bg-teal-600 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
               📊 Export
