@@ -12,6 +12,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
     .fade-in { animation: fadeIn 0.25s ease forwards; }
@@ -301,7 +302,7 @@ function localDateStr(d) {
 }
 function todayStr() { return localDateStr(new Date()); }
 function toMin(t) { const [h,m] = t.split(":").map(Number); return h*60+m; }
-function addHour(t) { const [h,m] = t.split(":").map(Number); return `${String(Math.min(h+1,20)).padStart(2,"0")}:${String(m).padStart(2,"0")}`; }
+function addHour(t) { const [h,m] = t.split(":").map(Number); if (h+1 >= 24) return "23:59"; return `${String(h+1).padStart(2,"0")}:${String(m).padStart(2,"0")}`; }
 // Hitung end_time dari start_time + durasi jam (desimal)
 function autoEndTime(startTime, durationHours) {
   if (!startTime || !durationHours || durationHours <= 0) return null;
@@ -317,7 +318,62 @@ function getWeekDays(base) {
   mon.setDate(d.getDate()-(day===0?6:day-1));
   return Array.from({length:7},(_,i)=>{ const dd=new Date(mon); dd.setDate(mon.getDate()+i); return dd; });
 }
-const HOURS = Array.from({length:13},(_,i)=>`${String(i+8).padStart(2,"0")}:00`);
+// Slot jam kalender: 08:00 sampai 00:00 (tengah malam)
+const HOURS = Array.from({length:17},(_,i)=>`${String((i+8)%24).padStart(2,"0")}:00`);
+
+// ─── TARGET WORKING HOURS ─────────────────────────────────────────────────────
+// HKE = Hari Kerja Efektif. target = jam kerja target per individu per bulan.
+const MONTH_TARGET = {
+  "2026-01": { hke:20, target:160 },
+  "2026-02": { hke:19, target:157 },
+  "2026-03": { hke:21, target:163 },
+  "2026-04": { hke:21, target:163 },
+  "2026-05": { hke:17, target:151 },
+  "2026-06": { hke:20, target:160 },
+  "2026-07": { hke:23, target:169 },
+  "2026-08": { hke:20, target:160 },
+  "2026-09": { hke:22, target:166 },
+  "2026-10": { hke:21, target:163 },
+  "2026-11": { hke:21, target:163 },
+  "2026-12": { hke:22, target:166 },
+};
+// Jumlah hari kerja (Senin–Jumat) antara dua tanggal Date, inklusif.
+function weekdaysBetween(startD, endD) {
+  let count = 0;
+  const d = new Date(startD);
+  while (d <= endD) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+}
+// Target jam kerja per individu untuk rentang [from,to] (string YYYY-MM-DD).
+// Tiap bulan diprorata berdasarkan porsi hari kerja yang tercakup rentang
+// (mis. Mei berjalan tgl 1–21 → target Mei dikalikan porsi HKE yang sudah lewat).
+function proratedTarget(from, to) {
+  if (!from || !to) return 0;
+  const start = new Date(from + "T00:00:00");
+  const end   = new Date(to   + "T00:00:00");
+  if (isNaN(start) || isNaN(end) || start > end) return 0;
+  let total = 0;
+  let cur = new Date(start.getFullYear(), start.getMonth(), 1);
+  while (cur <= end) {
+    const key = `${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}`;
+    const cfg = MONTH_TARGET[key];
+    if (cfg) {
+      const monthStart = new Date(cur.getFullYear(), cur.getMonth(), 1);
+      const monthEnd   = new Date(cur.getFullYear(), cur.getMonth()+1, 0);
+      const rStart = start > monthStart ? start : monthStart;
+      const rEnd   = end   < monthEnd   ? end   : monthEnd;
+      const wdMonth = weekdaysBetween(monthStart, monthEnd);
+      const wdRange = weekdaysBetween(rStart, rEnd);
+      if (wdMonth > 0) total += cfg.target * (wdRange / wdMonth);
+    }
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return total;
+}
 
 function findConflict(bookings, candidate) {
   const cS = toMin(candidate.start_time), cE = toMin(candidate.end_time);
@@ -667,10 +723,97 @@ const STATUS_ASSIGN_CFG    = {
   "Done Assign CRM":  { color:"#10b981", bg:"#d1fae5", label:"✅ Done Assign CRM" },
 };
 
-function RoomSidebar({ rooms, selectedRooms, onToggle, onSelectAll, onClearAll }) {
+// ─── MINI CALENDAR (sidebar) ──────────────────────────────────────────────────
+// Kalender bulanan ringkas ala Google Calendar. Klik tanggal => pindah minggu aktif.
+function MiniCalendar({ baseDate, onPickDate }) {
+  const [viewMonth, setViewMonth] = React.useState(
+    () => new Date(baseDate.getFullYear(), baseDate.getMonth(), 1)
+  );
+  // Selaraskan tampilan bulan ketika minggu aktif berpindah bulan
+  React.useEffect(() => {
+    setViewMonth(new Date(baseDate.getFullYear(), baseDate.getMonth(), 1));
+  }, [baseDate]);
+
+  const year = viewMonth.getFullYear(), month = viewMonth.getMonth();
+  const startDow    = new Date(year, month, 1).getDay();       // 0 = Minggu
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const todayS  = todayStr();
+  const weekSet = new Set(getWeekDays(baseDate).map(localDateStr));
+  const DOW     = ["Mg","Sn","Sl","Rb","Km","Jm","Sb"];
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs font-bold text-slate-700">
+          {viewMonth.toLocaleDateString("id-ID", { month: "long", year: "numeric" })}
+        </span>
+        <span className="flex items-center gap-0.5">
+          <button onClick={() => setViewMonth(new Date(year, month - 1, 1))} aria-label="Bulan sebelumnya"
+            className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100 transition-colors">‹</button>
+          <button onClick={() => setViewMonth(new Date(year, month + 1, 1))} aria-label="Bulan berikutnya"
+            className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100 transition-colors">›</button>
+        </span>
+      </div>
+      <div className="grid grid-cols-7 gap-y-0.5 text-center">
+        {DOW.map((d,i) => (
+          <div key={i} className="text-[9px] font-semibold text-slate-300 py-0.5">{d}</div>
+        ))}
+        {cells.map((date,i) => {
+          if (!date) return <div key={i}/>;
+          const ds = localDateStr(date);
+          const isToday = ds === todayS;
+          const inWeek  = weekSet.has(ds);
+          return (
+            <div key={i} className="flex justify-center">
+              <button onClick={() => onPickDate(date)}
+                aria-label={date.toLocaleDateString("id-ID",{day:"numeric",month:"long",year:"numeric"})}
+                className={`w-6 h-6 text-[10px] rounded-full flex items-center justify-center transition-colors ${
+                  isToday ? "bg-blue-600 text-white font-bold"
+                  : inWeek ? "bg-blue-100 text-blue-700 font-semibold"
+                  : "text-slate-600 hover:bg-slate-100"}`}>
+                {date.getDate()}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function RoomSidebar({ rooms, selectedRooms, onToggle, onSelectAll, onClearAll, baseDate, onPickDate, searchQuery, onSearchChange, onSearchSubmit }) {
+  // State collapse per-area — default {} berarti semua area tertutup
+  const [openAreas, setOpenAreas] = React.useState({});
+  const toggleArea = area => setOpenAreas(o => ({ ...o, [area]: !o[area] }));
+
   return (
     <aside className="w-56 min-w-[200px] bg-white border-r border-slate-200 flex flex-col h-full">
-      {/* Header + quick actions */}
+      {/* Search — cari berdasarkan judul meeting, SCH Code, atau nama agent */}
+      <div className="px-3 pt-3 pb-3 border-b border-slate-100 flex-shrink-0">
+        <div className="relative">
+          <span aria-hidden="true" className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs">🔍</span>
+          <input type="text" value={searchQuery} onChange={e => onSearchChange(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") onSearchSubmit(); }}
+            placeholder="Cari meeting, SCH, agent..." aria-label="Cari booking — tekan Enter untuk tampilan daftar"
+            className="w-full pl-7 pr-7 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-400"/>
+          {searchQuery && (
+            <button onClick={() => onSearchChange("")} aria-label="Hapus pencarian"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100 transition-colors">×</button>
+          )}
+        </div>
+      </div>
+
+      {/* Mini calendar */}
+      <div className="px-3 pt-3 pb-3 border-b border-slate-100 flex-shrink-0">
+        <MiniCalendar baseDate={baseDate} onPickDate={onPickDate}/>
+      </div>
+
+      {/* Header CS Agent + quick actions */}
       <div className="px-3 pt-3 pb-2 border-b border-slate-100 flex-shrink-0">
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">CS Agent</span>
@@ -688,21 +831,25 @@ function RoomSidebar({ rooms, selectedRooms, onToggle, onSelectAll, onClearAll }
         </div>
       </div>
 
-      {/* Agent list grouped by area */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-3">
+      {/* Daftar agent per-area — tiap area bisa di-collapse, default tertutup */}
+      <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
         {AREAS.map(area => {
           const areaRooms = rooms.filter(r => r.area === area);
           const areaSelected = areaRooms.filter(r => selectedRooms.includes(r.id)).length;
+          const open = !!openAreas[area];
           return (
             <div key={area}>
-              {/* Area header */}
-              <div className="flex items-center gap-1.5 px-1 mb-1.5">
+              {/* Area header — toggle collapse */}
+              <button onClick={() => toggleArea(area)} aria-expanded={open}
+                className="w-full flex items-center gap-1.5 px-1 py-1 rounded-lg hover:bg-slate-50 transition-colors">
+                <span aria-hidden="true" className={`text-[10px] text-slate-400 transition-transform ${open ? "" : "-rotate-90"}`}>▾</span>
                 <span className="w-2 h-2 rounded-full flex-shrink-0" style={{backgroundColor:AREA_COLORS[area]}}/>
                 <span className="text-xs font-bold uppercase tracking-wider" style={{color:AREA_COLORS[area]}}>{area}</span>
                 <span className="text-xs text-slate-400 ml-auto">{areaSelected}/{areaRooms.length}</span>
-              </div>
+              </button>
               {/* Agent pills */}
-              <div className="space-y-1">
+              {open && (
+              <div className="space-y-1 mt-1.5 pl-1">
                 {areaRooms.map(room => {
                   const on = selectedRooms.includes(room.id);
                   return (
@@ -721,6 +868,7 @@ function RoomSidebar({ rooms, selectedRooms, onToggle, onSelectAll, onClearAll }
                   );
                 })}
               </div>
+              )}
             </div>
           );
         })}
@@ -732,7 +880,8 @@ function RoomSidebar({ rooms, selectedRooms, onToggle, onSelectAll, onClearAll }
 // ─── BOOKING CHIP ─────────────────────────────────────────────────────────────
 function BookingChip({ booking, room, currentUser, col, totalCols, onClick }) {
   const SLOT_H   = 56;
-  const start    = toMin(booking.start_time) - toMin("08:00");
+  let start      = toMin(booking.start_time) - toMin("08:00");
+  if (start < 0) start += 24*60;   // jam dini hari (mis. 00:00) tampil di baris bawah, bukan negatif
   const duration = toMin(booking.end_time)   - toMin(booking.start_time);
   const top    = (start/60)*SLOT_H;
   const height = Math.max((duration/60)*SLOT_H-4, 24);
@@ -773,8 +922,18 @@ function BookingChip({ booking, room, currentUser, col, totalCols, onClick }) {
 }
 
 // ─── CALENDAR GRID ────────────────────────────────────────────────────────────
-function CalendarGrid({ weekDays, bookings, rooms, selectedRooms, currentUser, onSlotClick, onChipClick, holidays }) {
+function CalendarGrid({ weekDays, bookings, rooms, selectedRooms, currentUser, onSlotClick, onChipClick, holidays, searchQuery }) {
   const [expandedHolDay, setExpandedHolDay] = React.useState(null);
+
+  // Filter pencarian: cocokkan judul meeting, SCH Code, atau nama agent (text contains).
+  // Saat sedang mencari, pilihan agent di sidebar diabaikan (pencarian global).
+  const q = (searchQuery || "").trim().toLowerCase();
+  const matchBooking = b => {
+    if (!q) return selectedRooms.includes(b.room_id);
+    const room = rooms.find(r => r.id === b.room_id);
+    const hay  = `${b.title || ""} ${b.sch_code || ""} ${room?.name || ""}`.toLowerCase();
+    return hay.includes(q);
+  };
 
   // Tutup popup jika klik di luar
   React.useEffect(() => {
@@ -841,7 +1000,7 @@ function CalendarGrid({ weekDays, bookings, rooms, selectedRooms, currentUser, o
         {weekDays.map((day,di)=>{
           const dateStr = localDateStr(day);
           const isToday = dateStr===todayStr();
-          const laid    = computeColumns(bookings.filter(b=>b.date===dateStr && selectedRooms.includes(b.room_id)));
+          const laid    = computeColumns(bookings.filter(b=>b.date===dateStr && matchBooking(b)));
           return (
             <div key={di} className={`flex-1 border-l border-slate-100 relative ${isToday?"bg-blue-50/30":""}`}
               style={{minHeight:HOURS.length*56+"px"}}>
@@ -867,6 +1026,65 @@ function CalendarGrid({ weekDays, bookings, rooms, selectedRooms, currentUser, o
   );
 }
 
+// ─── SEARCH RESULTS (list view ala Google Calendar) ───────────────────────────
+// Ditampilkan saat user menekan Enter di kolom pencarian.
+function SearchResultsView({ bookings, rooms, query, onRowClick, onBack }) {
+  const q = (query || "").trim().toLowerCase();
+  const results = bookings
+    .filter(b => {
+      if (!q) return false;
+      const room = rooms.find(r => r.id === b.room_id);
+      const hay  = `${b.title || ""} ${b.sch_code || ""} ${room?.name || ""}`.toLowerCase();
+      return hay.includes(q);
+    })
+    .sort((a,b) => (a.date||"").localeCompare(b.date||"") || (a.start_time||"").localeCompare(b.start_time||""));
+
+  const fmtDateLabel = ds => {
+    const d = new Date(ds + "T00:00:00");
+    if (isNaN(d)) return { dayNum: "–", rest: ds };
+    const mo = d.toLocaleDateString("id-ID", { month:"short" });
+    const wd = d.toLocaleDateString("id-ID", { weekday:"short" });
+    return { dayNum: d.getDate(), rest: `${mo} ${d.getFullYear()}, ${wd}`.toUpperCase() };
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-white">
+      {/* Header */}
+      <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3 flex items-center gap-3 z-10">
+        <button onClick={onBack} aria-label="Kembali ke kalender"
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition-colors flex-shrink-0">←</button>
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-slate-800">Hasil Pencarian</div>
+          <div className="text-xs text-slate-400 truncate">{results.length} booking cocok dengan "{query}"</div>
+        </div>
+      </div>
+      {/* List */}
+      {results.length === 0 ? (
+        <div className="py-16 text-center text-slate-400 text-sm">Tidak ada booking yang cocok</div>
+      ) : (
+        <div className="divide-y divide-slate-100">
+          {results.map(b => {
+            const room = rooms.find(r => r.id === b.room_id);
+            const { dayNum, rest } = fmtDateLabel(b.date);
+            return (
+              <button key={b.id} onClick={() => onRowClick(b)}
+                className="w-full flex items-center gap-3 sm:gap-4 px-5 py-3 hover:bg-slate-50 transition-colors text-left">
+                <div className="flex items-baseline gap-2 w-36 sm:w-44 flex-shrink-0">
+                  <span className="text-2xl font-bold text-slate-700 tabular-nums leading-none">{dayNum}</span>
+                  <span className="text-[11px] text-slate-400 font-medium tracking-wide">{rest}</span>
+                </div>
+                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{backgroundColor: room?.colorHex || "#cbd5e1"}}/>
+                <span className="text-xs text-slate-500 w-24 flex-shrink-0 tabular-nums">{b.start_time}–{b.end_time}</span>
+                <span className="text-sm text-slate-700 font-medium truncate flex-1">{b.title || "(tanpa judul)"}</span>
+                <span className="text-xs text-slate-400 hidden md:block flex-shrink-0 truncate max-w-[140px]">{room?.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── AREA + AGENT PICKER ─────────────────────────────────────────────────────
 function AreaAgentPicker({ rooms, form, set, canEdit }) {
@@ -1266,7 +1484,7 @@ function HolidayModal({ isOpen, onClose, holidays, onSave, onDelete, currentUser
 // ─── BOOKING MODAL ────────────────────────────────────────────────────────────
 function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, bookings, currentUser, holidays, lockedRoomId }) {
   const isEdit = !!initialData?.id;
-  const blank  = { room_id:rooms[0]?.id, title:"", date:todayStr(), start_time:"09:00", end_time:"10:00", attendees:"", notes:"", visit_type:"Online", activity:"", status_jadwal:"", status_assignment:"Need Assign CRM" };
+  const blank  = { room_id:rooms[0]?.id, sch_code:"", title:"", date:todayStr(), start_time:"09:00", end_time:"10:00", attendees:"", notes:"", visit_type:"Online", activity:"", status_jadwal:"", status_assignment:"Need Assign CRM" };
   const [form,     setForm]     = useState(blank);
   const [conflict, setConflict] = useState(null);
   const [loading,  setLoading]  = useState(false);
@@ -1301,6 +1519,7 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
 
   const submit = async e => {
     e.preventDefault();
+    if (!form.sch_code || !form.sch_code.trim()) { alert("SCH Code wajib diisi."); return; }
     if (!form.activity) { alert("Pilih category activity terlebih dahulu."); return; }
     if (conflict || loading) return;
     setLoading(true);
@@ -1316,6 +1535,14 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
         </div>
         <form onSubmit={submit} className="p-6 space-y-4">
+
+          {/* ── SCH Code ── */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">SCH Code *</label>
+            <input type="text" required placeholder="cth. SCH/202601/0001" value={form.sch_code}
+              onChange={e=>set("sch_code",e.target.value)} disabled={!canEdit}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50"/>
+          </div>
 
           {/* ── Visit Type ── */}
           <div>
@@ -1372,7 +1599,7 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
 
           <div>
             <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Nama / Keterangan Meeting *</label>
-            <input type="text" required placeholder="cth. Training Sprint Planning, Visit PT. XYZ..." value={form.title}
+            <input type="text" required placeholder="cth. Majoo Cafe - INV/NEW/202601/00001" value={form.title}
               onChange={e=>set("title",e.target.value)} disabled={!canEdit}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50"/>
           </div>
@@ -1428,7 +1655,7 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
           )}
           <div>
             <label className="block text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Peserta</label>
-            <input type="text" placeholder="cth. Tim Product, Budi, +3" value={form.attendees}
+            <input type="text" placeholder="cth. Budi, Tim Operasional" value={form.attendees}
               onChange={e=>set("attendees",e.target.value)} disabled={!canEdit}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50"/>
           </div>
@@ -2129,8 +2356,458 @@ function ExportModal({ onClose, bookings }) {
   );
 }
 
+// ─── KPI DETAIL MODAL ─────────────────────────────────────────────────────────
+// Popup detail saat salah satu KPI tile di dashboard diklik.
+function KpiDetailModal({ type, bookings, bookingHours, onClose }) {
+  const agentName = id => ROOMS.find(r => String(r.id) === String(id))?.name || "—";
+  const fmtTgl = d => {
+    if (!d) return "—";
+    const dt = new Date(d + "T00:00:00");
+    return isNaN(dt) ? d : dt.toLocaleDateString("id-ID", { day:"2-digit", month:"short", year:"numeric" });
+  };
+  const fmtJam = h => (h % 1 === 0 ? String(h) : h.toFixed(1));
+
+  const cfg = {
+    total:      { icon:"📋", title:"Total Booking",  rows: bookings },
+    online:     { icon:"🌐", title:"Booking Online", rows: bookings.filter(b => (b.visit_type||"Online") !== "Offline") },
+    offline:    { icon:"📍", title:"Booking Offline",rows: bookings.filter(b => b.visit_type === "Offline") },
+    totalHours: { icon:"⏱️", title:"Total Hours",   rows: bookings },
+    uniqAct:    { icon:"⚡", title:"Jenis Activity" },
+  }[type] || { icon:"", title:"Detail" };
+
+  // Daftar jenis activity + jumlah (khusus tile Jenis Activity)
+  const actRows = (() => {
+    if (type !== "uniqAct") return [];
+    const c = {};
+    bookings.forEach(b => { if (b.activity) c[b.activity] = (c[b.activity]||0)+1; });
+    return Object.entries(c).sort((a,b)=>b[1]-a[1]);
+  })();
+
+  const rows     = cfg.rows ? [...cfg.rows].sort((a,b)=>(a.date||"").localeCompare(b.date||"")) : [];
+  const showJam  = type === "totalHours";
+  const totalJam = showJam ? rows.reduce((s,b)=>s+bookingHours(b),0) : 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center modal-overlay bg-black/30" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[85vh] overflow-y-auto"
+        onClick={e=>e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
+          <h2 className="text-lg font-bold text-slate-800">{cfg.icon} Detail {cfg.title}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
+        </div>
+        <div className="p-5">
+
+          {type === "uniqAct" ? (
+            actRows.length === 0
+              ? <div className="py-10 text-center text-slate-400 text-sm">Tidak ada data di rentang ini</div>
+              : <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-xs text-slate-500 uppercase tracking-wider border-b border-slate-100">
+                      <th className="px-3 py-2 text-left font-semibold">Jenis Activity</th>
+                      <th className="px-3 py-2 text-center font-semibold">Jumlah Booking</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {actRows.map(([name,count])=>(
+                      <tr key={name} className="hover:bg-slate-50">
+                        <td className="px-3 py-2 text-slate-700 font-medium">{name}</td>
+                        <td className="px-3 py-2 text-center font-semibold text-purple-600">{count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-50 border-t-2 border-slate-200 font-bold">
+                      <td className="px-3 py-2 text-slate-700">{actRows.length} jenis activity</td>
+                      <td className="px-3 py-2 text-center text-slate-800">{actRows.reduce((s,[,c])=>s+c,0)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+          ) : (
+            rows.length === 0
+              ? <div className="py-10 text-center text-slate-400 text-sm">Tidak ada data di rentang ini</div>
+              : <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-xs text-slate-500 uppercase tracking-wider border-b border-slate-100">
+                      <th className="px-3 py-2 text-left font-semibold">Tanggal</th>
+                      <th className="px-3 py-2 text-left font-semibold">SCH Code</th>
+                      <th className="px-3 py-2 text-left font-semibold">Nama Meeting</th>
+                      <th className="px-3 py-2 text-left font-semibold">Agent</th>
+                      {showJam && <th className="px-3 py-2 text-center font-semibold">Jam</th>}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {rows.map(b=>(
+                      <tr key={b.id} className="hover:bg-slate-50">
+                        <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{fmtTgl(b.date)}</td>
+                        <td className="px-3 py-2 text-slate-600">{b.sch_code || "—"}</td>
+                        <td className="px-3 py-2 text-slate-700 font-medium">{b.title || "—"}</td>
+                        <td className="px-3 py-2 text-slate-600">{agentName(b.room_id)}</td>
+                        {showJam && <td className="px-3 py-2 text-center font-semibold text-indigo-600">{fmtJam(bookingHours(b))}</td>}
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-50 border-t-2 border-slate-200 font-bold">
+                      <td className="px-3 py-2 text-slate-700" colSpan={4}>{rows.length} booking</td>
+                      {showJam && <td className="px-3 py-2 text-center text-indigo-600">{fmtJam(totalJam)} jam</td>}
+                    </tr>
+                  </tfoot>
+                </table>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── DASHBOARD PAGE ───────────────────────────────────────────────────────────
+function DashboardPage({ bookings }) {
+  const today = new Date();
+  const fmtDate = d => {
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  };
+  const firstOfMonth = () => fmtDate(new Date(today.getFullYear(), today.getMonth(), 1));
+
+  const [selectedAgent, setSelectedAgent] = useState("all");
+  const [dateFrom, setDateFrom]           = useState(firstOfMonth);
+  const [dateTo,   setDateTo]             = useState(() => fmtDate(today));
+  const [detailKey, setDetailKey]         = useState(null);   // KPI tile yang sedang dibuka detailnya
+
+  const colChartRef = useRef(null);
+  const actChartRef = useRef(null);
+
+  const applyPreset = (type) => {
+    if (type === "today") {
+      setDateFrom(fmtDate(today)); setDateTo(fmtDate(today));
+    } else if (type === "yesterday") {
+      const y = new Date(today); y.setDate(y.getDate()-1);
+      setDateFrom(fmtDate(y)); setDateTo(fmtDate(y));
+    } else if (type === "week") {
+      const w = new Date(today), day = w.getDay();   // 0=Minggu .. 6=Sabtu
+      w.setDate(w.getDate() - (day===0?6:day-1));     // mundur ke Senin
+      setDateFrom(fmtDate(w)); setDateTo(fmtDate(today));
+    } else if (type === "month") {
+      setDateFrom(fmtDate(new Date(today.getFullYear(), today.getMonth(), 1)));
+      setDateTo(fmtDate(today));
+    } else if (type === "year") {
+      setDateFrom(fmtDate(new Date(today.getFullYear(), 0, 1)));
+      setDateTo(fmtDate(today));
+    }
+  };
+
+  // Filtered bookings by agent + date
+  const filtered = useMemo(() => bookings.filter(b => {
+    const inAgent = selectedAgent === "all" || String(b.room_id) === selectedAgent;
+    const inDate  = (!dateFrom || b.date >= dateFrom) && (!dateTo || b.date <= dateTo);
+    return inAgent && inDate;
+  }), [bookings, selectedAgent, dateFrom, dateTo]);
+
+  // Index jam dari ACTIVITY_LIST untuk sebuah booking.
+  // Cocokkan berdasarkan nama activity + visit_type (atau "Both").
+  // Activity dengan duration 0 ("durasi manual") dihitung 0 jam.
+  const bookingHours = b => {
+    if (!b.activity) return 0;
+    const vt = b.visit_type || "Online";
+    const act = ACTIVITY_LIST.find(a => a.name === b.activity && (a.type === vt || a.type === "Both"));
+    return act ? act.duration : 0;
+  };
+
+  // KPI
+  const kpis = useMemo(() => ({
+    total:    filtered.length,
+    online:   filtered.filter(b => (b.visit_type||"Online") !== "Offline").length,
+    offline:  filtered.filter(b => b.visit_type === "Offline").length,
+    uniqAct:  new Set(filtered.map(b=>b.activity).filter(Boolean)).size,
+    totalHours: filtered.reduce((s,b) => s + bookingHours(b), 0),
+  }), [filtered]);
+
+  // Monthly chart data (stacked Online/Offline)
+  const monthlyData = useMemo(() => {
+    const map = {};
+    filtered.forEach(b => {
+      const key = b.date.substring(0,7);
+      if (!map[key]) map[key] = { online:0, offline:0 };
+      b.visit_type === "Offline" ? map[key].offline++ : map[key].online++;
+    });
+    const keys = Object.keys(map).sort();
+    return {
+      labels:  keys.map(k => { const [y,m]=k.split("-"); return new Date(Number(y),Number(m)-1).toLocaleDateString("id-ID",{month:"short",year:"2-digit"}); }),
+      online:  keys.map(k=>map[k].online),
+      offline: keys.map(k=>map[k].offline),
+    };
+  }, [filtered]);
+
+  // Activity breakdown (sorted desc)
+  const activityData = useMemo(() => {
+    const counts = {};
+    filtered.forEach(b => { if(b.activity) counts[b.activity] = (counts[b.activity]||0)+1; });
+    const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    return {
+      labels: sorted.map(([a]) => a.length>32 ? a.substring(0,32)+"…" : a),
+      data:   sorted.map(([,c]) => c),
+    };
+  }, [filtered]);
+
+  // All-agents summary table (date-filtered only)
+  const agentSummary = useMemo(() => {
+    const df = bookings.filter(b => (!dateFrom||b.date>=dateFrom) && (!dateTo||b.date<=dateTo));
+    return ROOMS.map(room => {
+      const rb = df.filter(b => String(b.room_id)===String(room.id));
+      const cmap = {}; rb.forEach(b=>{if(b.activity) cmap[b.activity]=(cmap[b.activity]||0)+1;});
+      const topAct = Object.entries(cmap).sort((a,b)=>b[1]-a[1])[0]?.[0] || "—";
+      return { room, total:rb.length, online:rb.filter(b=>(b.visit_type||"Online")!=="Offline").length, offline:rb.filter(b=>b.visit_type==="Offline").length, hours:rb.reduce((s,b)=>s+bookingHours(b),0), topAct };
+    }).sort((a,b)=>b.total-a.total);
+  }, [bookings, dateFrom, dateTo]);
+  const grandTotal   = agentSummary.reduce((s,a)=>s+a.total,  0);
+  const grandOnline  = agentSummary.reduce((s,a)=>s+a.online, 0);
+  const grandOffline = agentSummary.reduce((s,a)=>s+a.offline,0);
+  const grandHours   = agentSummary.reduce((s,a)=>s+a.hours,  0);
+  // Format jam: bilangan bulat tanpa desimal, selain itu 1 angka di belakang koma
+  const fmtHours = h => (h % 1 === 0 ? String(h) : h.toFixed(1));
+
+  // Target working hours (prorata HKE) — per individu & nasional (semua agent)
+  const targetIndividual = useMemo(() => proratedTarget(dateFrom, dateTo), [dateFrom, dateTo]);
+  const targetNasional   = targetIndividual * ROOMS.length;
+  // Target sesuai filter: 1 agent → individu, "Semua Agent" → nasional
+  const targetScope  = selectedAgent === "all" ? targetNasional : targetIndividual;
+  const progressPct  = targetScope > 0 ? (kpis.totalHours / targetScope) * 100 : 0;
+  const nasionalPct  = targetNasional > 0 ? (grandHours / targetNasional) * 100 : 0;
+
+  // Column chart
+  useEffect(() => {
+    if (!colChartRef.current) return;
+    const existing = Chart.getChart(colChartRef.current);
+    if (existing) existing.destroy();
+    if (!monthlyData.labels.length) return;
+    new Chart(colChartRef.current, {
+      type: "bar",
+      data: {
+        labels: monthlyData.labels,
+        datasets: [
+          { label:"Online 🌐",  data:monthlyData.online,  backgroundColor:"#2DBDB6", borderRadius:5 },
+          { label:"Offline 📍", data:monthlyData.offline, backgroundColor:"#f59e0b", borderRadius:5 },
+        ]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ position:"top" } },
+        scales:{
+          x:{ stacked:true, grid:{ display:false } },
+          y:{ stacked:true, beginAtZero:true, ticks:{ precision:0 } }
+        }
+      }
+    });
+  }, [monthlyData]);
+
+  // Activity chart (horizontal bar)
+  useEffect(() => {
+    if (!actChartRef.current) return;
+    const existing = Chart.getChart(actChartRef.current);
+    if (existing) existing.destroy();
+    if (!activityData.labels.length) return;
+    new Chart(actChartRef.current, {
+      type: "bar",
+      data: {
+        labels: activityData.labels,
+        datasets:[{
+          label:"Jumlah",
+          data: activityData.data,
+          backgroundColor: activityData.data.map((_,i)=>`hsl(${166+i*9},${55-i%3*5}%,${46+i%4*4}%)`),
+          borderRadius:4,
+        }]
+      },
+      options: {
+        indexAxis:"y", responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ display:false } },
+        scales:{ x:{ beginAtZero:true, ticks:{ precision:0 } }, y:{ grid:{ display:false } } }
+      }
+    });
+  }, [activityData]);
+
+  const selectedRoom = ROOMS.find(r=>String(r.id)===selectedAgent);
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-slate-50 p-5">
+      <div className="max-w-6xl mx-auto space-y-5">
+
+        {/* Title */}
+        <div>
+          <h1 className="text-xl font-bold text-slate-800">📊 Dashboard Activity</h1>
+          <p className="text-sm text-slate-500 mt-0.5">Ringkasan aktivitas Customer Support berdasarkan data booking</p>
+        </div>
+
+        {/* Filter Bar */}
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Agent</label>
+              <select value={selectedAgent} onChange={e=>setSelectedAgent(e.target.value)}
+                className="border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-teal-400 min-w-[200px]">
+                <option value="all">Semua Agent</option>
+                {ROOMS.map(r=>(
+                  <option key={r.id} value={String(r.id)}>{r.name}{r.city?` — ${r.city}`:""}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Dari</label>
+              <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}
+                className="border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-teal-400"/>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Sampai</label>
+              <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)}
+                className="border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-teal-400"/>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Preset</label>
+              <div className="flex gap-1.5 flex-wrap">
+                {[["today","Hari Ini"],["yesterday","Kemarin"],["week","Minggu Ini"],["month","Bulan Ini"],["year","Tahun Ini"]].map(([t,l])=>(
+                  <button key={t} onClick={()=>applyPreset(t)}
+                    className="px-3 py-2 text-xs font-semibold rounded-xl border border-slate-200 text-slate-600 hover:bg-teal-50 hover:border-teal-300 hover:text-teal-700 transition-colors">
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* KPI Cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          {[
+            { id:"total",      icon:"📋", label:"Total Booking",   val:kpis.total,   clr:"text-blue-600",   bg:"bg-blue-50",   border:"border-blue-200" },
+            { id:"online",     icon:"🌐", label:"Online",           val:kpis.online,  clr:"text-teal-600",   bg:"bg-teal-50",   border:"border-teal-200" },
+            { id:"offline",    icon:"📍", label:"Offline",          val:kpis.offline, clr:"text-amber-600",  bg:"bg-amber-50",  border:"border-amber-200" },
+            { id:"uniqAct",    icon:"⚡", label:"Jenis Activity",   val:kpis.uniqAct, clr:"text-purple-600", bg:"bg-purple-50", border:"border-purple-200" },
+            { id:"totalHours", icon:"⏱️", label:"Total Hours",     val:(kpis.totalHours % 1 === 0 ? kpis.totalHours : kpis.totalHours.toFixed(1)), suffix:" jam", clr:"text-indigo-600", bg:"bg-indigo-50", border:"border-indigo-200" },
+            { icon:"🎯", label:"% Target", val:`${Math.round(progressPct)}%`,
+              clr: progressPct>=100 ? "text-emerald-600" : "text-rose-600",
+              bg: progressPct>=100 ? "bg-emerald-50" : "bg-rose-50",
+              border: progressPct>=100 ? "border-emerald-200" : "border-rose-200",
+              bar: progressPct,
+              sub: `${fmtHours(kpis.totalHours)} / ${fmtHours(targetScope)} jam · ${selectedAgent==="all" ? "Nasional" : "Individu"}` },
+          ].map(c=>(
+            <div key={c.label} onClick={c.id ? ()=>setDetailKey(c.id) : undefined}
+              title={c.id ? "Klik untuk lihat detail" : undefined}
+              className={`bg-white rounded-2xl border ${c.border} shadow-sm p-5 ${c.id ? "cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all" : ""}`}>
+              <div className={`text-xl ${c.bg} w-10 h-10 rounded-xl flex items-center justify-center mb-3`}>{c.icon}</div>
+              <div className={`text-3xl font-bold ${c.clr}`}>{c.val}{c.suffix && <span className="text-base font-semibold opacity-70">{c.suffix}</span>}</div>
+              <div className="text-xs text-slate-500 font-medium mt-1 flex items-center gap-1">{c.label}{c.id && <span className="text-slate-300">›</span>}</div>
+              {c.bar !== undefined && (
+                <div className="mt-2">
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${progressPct>=100 ? "bg-emerald-500" : "bg-rose-500"}`}
+                      style={{width:Math.min(c.bar,100)+"%"}}/>
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1 truncate">{c.sub}</div>
+                </div>
+              )}
+              {selectedAgent!=="all" && c.id && <div className="text-xs text-slate-400 truncate">{selectedRoom?.name}</div>}
+            </div>
+          ))}
+        </div>
+
+        {/* Charts */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* Column chart */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+            <h3 className="font-bold text-slate-700 mb-4 text-sm">📈 Booking per Bulan (Online vs Offline)</h3>
+            {monthlyData.labels.length === 0
+              ? <div className="h-60 flex items-center justify-center text-slate-400 text-sm">Tidak ada data di rentang ini</div>
+              : <div className="h-60"><canvas ref={colChartRef}/></div>
+            }
+          </div>
+          {/* Activity chart */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+            <h3 className="font-bold text-slate-700 mb-4 text-sm">⚡ Distribusi Category Activity</h3>
+            {activityData.labels.length === 0
+              ? <div className="h-60 flex items-center justify-center text-slate-400 text-sm">Tidak ada data di rentang ini</div>
+              : <div className="overflow-y-auto" style={{height: Math.min(480, Math.max(240, activityData.labels.length*30))+"px"}}>
+                  <canvas ref={actChartRef} style={{height: Math.max(240, activityData.labels.length*30)+"px"}}/>
+                </div>
+            }
+          </div>
+        </div>
+
+        {/* All agents summary table */}
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+            <h3 className="font-bold text-slate-700 text-sm">👥 Ringkasan Semua Agent</h3>
+            <span className="text-xs text-slate-400 bg-slate-100 px-3 py-1 rounded-full">
+              {grandTotal} booking · {fmtHours(grandHours)} jam · target nasional {fmtHours(targetNasional)} jam
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-xs text-slate-500 uppercase tracking-wider border-b border-slate-100">
+                  <th className="px-5 py-3 text-left font-semibold">Agent</th>
+                  <th className="px-4 py-3 text-center font-semibold">Total</th>
+                  <th className="px-4 py-3 text-center font-semibold">Online 🌐</th>
+                  <th className="px-4 py-3 text-center font-semibold">Offline 📍</th>
+                  <th className="px-4 py-3 text-center font-semibold">Total Jam ⏱️</th>
+                  <th className="px-4 py-3 text-center font-semibold">% Target 🎯</th>
+                  <th className="px-5 py-3 text-left font-semibold hidden md:table-cell">Top Activity</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {agentSummary.map(({room,total,online,offline,hours,topAct})=>{
+                  const pct = targetIndividual > 0 ? Math.round(hours/targetIndividual*100) : 0;
+                  return (
+                  <tr key={room.id} className={`hover:bg-slate-50 transition-colors ${total===0?"opacity-40":""}`}>
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{backgroundColor:room.colorHex}}/>
+                        <span className="font-medium text-slate-700">{room.name}</span>
+                        {room.city && <span className="text-xs text-slate-400 hidden sm:inline">{room.city}</span>}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-center font-bold text-slate-800">{total}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-teal-600">{online}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-amber-600">{offline}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-indigo-600">{fmtHours(hours)}</td>
+                    <td className={`px-4 py-3 text-center font-semibold ${pct>=100?"text-emerald-600":"text-rose-600"}`}>
+                      {targetIndividual > 0 ? pct+"%" : "—"}
+                    </td>
+                    <td className="px-5 py-3 text-xs text-slate-500 hidden md:table-cell truncate max-w-[200px]">{topAct}</td>
+                  </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-50 border-t-2 border-slate-200 font-bold">
+                  <td className="px-5 py-3 text-slate-700 text-sm">Total Keseluruhan</td>
+                  <td className="px-4 py-3 text-center text-slate-800">{grandTotal}</td>
+                  <td className="px-4 py-3 text-center text-teal-600">{grandOnline}</td>
+                  <td className="px-4 py-3 text-center text-amber-600">{grandOffline}</td>
+                  <td className="px-4 py-3 text-center text-indigo-600">{fmtHours(grandHours)}</td>
+                  <td className={`px-4 py-3 text-center ${nasionalPct>=100?"text-emerald-600":"text-rose-600"}`}>
+                    {targetNasional > 0 ? Math.round(nasionalPct)+"%" : "—"}
+                  </td>
+                  <td className="px-5 py-3 hidden md:table-cell"/>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+
+        {/* Detail modal saat KPI tile diklik */}
+        {detailKey && (
+          <KpiDetailModal type={detailKey} bookings={filtered} bookingHours={bookingHours}
+            onClose={()=>setDetailKey(null)}/>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 function App() {
+  const [currentPage,   setCurrentPage]   = useState("calendar");
   const [currentUser,   setCurrentUser]   = useState(()=>loadSession());
   const [bookings,      setBookings]      = useState([]);
   const [holidays,      setHolidays]      = useState([]);
@@ -2158,6 +2835,9 @@ function App() {
   const [notifLogs,     setNotifLogs]     = useState(() => { const s = loadSession(); return s ? loadNotifLogs(s.id) : []; });
   const [loading,       setLoading]       = useState(false);
   const [accountOpen,   setAccountOpen]   = useState(false);
+  const [utilOpen,      setUtilOpen]      = useState(false);  // dropdown menu Utilities
+  const [searchQuery,   setSearchQuery]   = useState("");     // pencarian booking di kalender
+  const [searchListView,setSearchListView]= useState(false);  // true = tampilkan hasil sebagai list (saat Enter)
   const { toasts, add: addToast } = useToast();
 
   const weekDays = useMemo(()=>getWeekDays(baseDate),[baseDate]);
@@ -2334,7 +3014,7 @@ function App() {
       if (data.id) {
         // ── UPDATE ──────────────────────────────────────────────
         const updated = await supa.update("bookings", data.id, {
-          room_id: data.room_id, title: data.title, date: data.date,
+          room_id: data.room_id, sch_code: data.sch_code || "", title: data.title, date: data.date,
           start_time: data.start_time, end_time: data.end_time,
           attendees: data.attendees, notes: data.notes,
           booked_by_name: data.booked_by_name, booked_by_email: data.booked_by_email,
@@ -2361,7 +3041,7 @@ function App() {
           }
         }
         const inserted = await supa.insert("bookings", {
-          id: newId, room_id: data.room_id, title: data.title, date: data.date,
+          id: newId, room_id: data.room_id, sch_code: data.sch_code || "", title: data.title, date: data.date,
           start_time: data.start_time, end_time: data.end_time,
           attendees: data.attendees||"", notes: data.notes||"",
           booked_by_name: data.booked_by_name, booked_by_email: data.booked_by_email,
@@ -2445,81 +3125,146 @@ function App() {
           <div className="text-xs font-medium text-slate-500 leading-tight">Customer Support Agent</div>
         </div>
 
-        <div className="flex items-center gap-1.5 ml-1">
-          <button onClick={prevWeek} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500">◀</button>
-          <button onClick={()=>setBaseDate(new Date())} className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50">Hari Ini</button>
-          <button onClick={nextWeek} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500">▶</button>
-          <span className="text-sm font-semibold text-slate-700 ml-1">{fmtMonthYear(weekDays[0])}</span>
+        {/* Navigasi halaman */}
+        <nav aria-label="Navigasi halaman" className="flex items-center gap-1 ml-2 bg-slate-100 rounded-lg p-1">
+          {[["calendar","📅","Calendar"],["dashboard","📊","Dashboard"]].map(([pg,ic,lbl])=>(
+            <button key={pg} onClick={()=>setCurrentPage(pg)}
+              aria-current={currentPage===pg ? "page" : undefined}
+              className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-semibold transition-all ${
+                currentPage===pg ? "bg-white text-teal-700 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              }`}>
+              <span aria-hidden="true">{ic}</span><span className="hidden sm:inline">{lbl}</span>
+            </button>
+          ))}
+        </nav>
+
+        {currentPage === "calendar" && (
+        <div role="group" aria-label="Navigasi minggu" className="flex items-center gap-1 ml-1">
+          <button onClick={prevWeek} aria-label="Minggu sebelumnya"
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition-colors">◀</button>
+          <button onClick={()=>setBaseDate(new Date())}
+            className="h-8 px-3 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors">Hari Ini</button>
+          <button onClick={nextWeek} aria-label="Minggu berikutnya"
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition-colors">▶</button>
+          <span className="text-sm font-semibold text-slate-700 ml-1.5 whitespace-nowrap">{fmtMonthYear(weekDays[0])}</span>
         </div>
+        )}
 
         <div className="ml-auto flex items-center gap-2">
-          <button onClick={loadBookings} disabled={loading}
-            className="hidden sm:flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50 transition-colors">
+          {/* Muat ulang data */}
+          <button onClick={loadBookings} disabled={loading} aria-label="Muat ulang data"
+            className="hidden sm:flex items-center gap-1.5 h-9 px-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50 transition-colors">
             {loading ? (
-              <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
               </svg>
             ) : (
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
               </svg>
             )}
-            {loading ? "Memuat..." : "Refresh"}
+            <span>{loading ? "Memuat..." : "Refresh"}</span>
           </button>
-          <div className="hidden sm:flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-600">
+
+          {/* Jumlah booking hari ini */}
+          <div className="hidden md:flex items-center h-9 px-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-600 whitespace-nowrap">
             {todayCount} booking hari ini
           </div>
-          <button onClick={()=>setNotifOpen(true)} className="relative p-2 rounded-lg hover:bg-slate-100 text-slate-500">
-            🔔
+
+          {/* Notifikasi */}
+          <button onClick={()=>setNotifOpen(true)}
+            aria-label={countUnread(notifLogs)>0 ? `Notifikasi, ${countUnread(notifLogs)} belum dibaca` : "Notifikasi"}
+            className="relative w-9 h-9 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition-colors">
+            <span aria-hidden="true">🔔</span>
             {countUnread(notifLogs)>0 && (
-              <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold leading-none">
+              <span className="absolute top-0.5 right-0.5 bg-red-500 text-white text-[10px] rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center font-bold leading-none">
                 {countUnread(notifLogs)>9?"9+":countUnread(notifLogs)}
               </span>
             )}
           </button>
-          <button onClick={()=>setAccountOpen(true)}
-            className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 transition-colors">
-            {currentUser.photo
-              ? <img src={currentUser.photo} alt="avatar" className="w-6 h-6 rounded-full object-cover"/>
-              : <div className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">
-                  {currentUser.name?.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2)||"?"}
-                </div>
-            }
-            <span className="text-xs font-medium text-slate-700 hidden sm:block">{currentUser.name}</span>
-            <span className="text-xs text-slate-400 hidden sm:block">·</span>
-            <span className="text-xs text-slate-400 hidden sm:block">{currentUser.role==="admin"?"Admin":currentUser.role==="cs"?"CS Agent":"Employee"}</span>
-            <button onClick={e=>{e.stopPropagation();logout();}} className="text-xs text-red-400 hover:text-red-600 hidden sm:block">Keluar</button>
-          </button>
-          {/* Tombol Connect GCal — untuk admin dan cs agent */}
-          {(currentUser?.role==="admin" || currentUser?.role==="cs") && GCAL_CLIENT_ID !== "YOUR_GOOGLE_CLIENT_ID_HERE" && (
-            <button onClick={connectGoogleCal} disabled={gcalConnecting}
-              title={getGoogleToken() ? "Google Calendar terhubung — klik untuk reconnect" : "Hubungkan ke Google Calendar"}
-              className={`flex items-center gap-1.5 text-white text-sm font-semibold px-3 py-2 rounded-xl shadow-sm transition-colors disabled:opacity-60 ${
-                getGoogleToken() ? "bg-green-500 hover:bg-green-600" : "bg-slate-500 hover:bg-slate-600"
-              }`}>
-              {gcalConnecting ? "⏳" : getGoogleToken() ? "📅✓" : "📅"}
-              <span className="hidden sm:inline">{gcalConnecting ? "Menghubungkan..." : getGoogleToken() ? "GCal" : "Connect GCal"}</span>
+
+          {/* Akun — tombol profil & keluar terpisah dalam satu pill */}
+          <div className="flex items-stretch h-9 bg-slate-50 border border-slate-200 rounded-lg overflow-hidden">
+            <button onClick={()=>setAccountOpen(true)} aria-label="Buka pengaturan akun"
+              className="flex items-center gap-2 px-2.5 hover:bg-slate-100 transition-colors">
+              {currentUser.photo
+                ? <img src={currentUser.photo} alt="" className="w-6 h-6 rounded-full object-cover"/>
+                : <div aria-hidden="true" className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">
+                    {currentUser.name?.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2)||"?"}
+                  </div>
+              }
+              <span className="hidden sm:flex flex-col items-start leading-tight">
+                <span className="text-xs font-semibold text-slate-700 max-w-[140px] truncate">{currentUser.name}</span>
+                <span className="text-[10px] text-slate-400">{currentUser.role==="admin"?"Admin":currentUser.role==="cs"?"CS Agent":"Employee"}</span>
+              </span>
             </button>
-          )}
-          {/* Tombol Export & Libur — hanya admin */}
-          {currentUser?.role==="admin" && (<>
-            <button onClick={()=>setExportOpen(true)}
-              className="flex items-center gap-1.5 bg-teal-500 hover:bg-teal-600 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
-              📊 Export
+            <div aria-hidden="true" className="w-px bg-slate-200 hidden sm:block"/>
+            <button onClick={logout} aria-label="Keluar dari akun"
+              className="hidden sm:flex items-center px-3 text-xs font-medium text-red-500 hover:bg-red-50 hover:text-red-600 transition-colors">
+              Keluar
             </button>
-            <button onClick={()=>setHolidayOpen(true)}
-              className="flex items-center gap-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
-              🏖️ Libur
-            </button>
-          </>)}
-          <button onClick={()=>openNew()}
-            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2 rounded-xl shadow-sm transition-colors">
-            <span className="text-base leading-none">+</span> Booking
+          </div>
+
+          {/* Utilities — gabungan Connect GCal, Export, Libur dalam satu dropdown */}
+          {(() => {
+            const showGCal  = (currentUser?.role==="admin" || currentUser?.role==="cs") && GCAL_CLIENT_ID !== "YOUR_GOOGLE_CLIENT_ID_HERE";
+            const showAdmin = currentUser?.role==="admin";
+            if (!showGCal && !showAdmin) return null;
+            return (
+              <div className="relative">
+                <button onClick={()=>setUtilOpen(o=>!o)} aria-haspopup="menu" aria-expanded={utilOpen} aria-label="Utilities"
+                  className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-semibold border transition-colors ${
+                    utilOpen ? "bg-slate-100 border-slate-300 text-slate-700" : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                  }`}>
+                  <span aria-hidden="true">🧰</span>
+                  <span className="hidden sm:inline">Utilities</span>
+                  <span aria-hidden="true" className={`text-[10px] transition-transform ${utilOpen?"rotate-180":""}`}>▾</span>
+                </button>
+                {utilOpen && (<>
+                  {/* backdrop transparan untuk menutup menu saat klik di luar */}
+                  <div className="fixed inset-0 z-40" aria-hidden="true" onClick={()=>setUtilOpen(false)}/>
+                  <div role="menu" aria-label="Utilities"
+                    className="absolute right-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-lg p-1.5 z-50 flex flex-col gap-1">
+                    {showGCal && (
+                      <button role="menuitem" onClick={()=>{connectGoogleCal(); setUtilOpen(false);}} disabled={gcalConnecting}
+                        title={getGoogleToken() ? "Google Calendar terhubung — klik untuk reconnect" : "Hubungkan ke Google Calendar"}
+                        className={`flex items-center gap-2 w-full h-9 px-3 rounded-lg text-xs font-semibold text-white shadow-sm transition-colors disabled:opacity-60 ${
+                          getGoogleToken() ? "bg-green-500 hover:bg-green-600" : "bg-slate-500 hover:bg-slate-600"
+                        }`}>
+                        <span aria-hidden="true">{gcalConnecting ? "⏳" : getGoogleToken() ? "📅✓" : "📅"}</span>
+                        <span>{gcalConnecting ? "Menghubungkan..." : getGoogleToken() ? "GCal Terhubung" : "Connect GCal"}</span>
+                      </button>
+                    )}
+                    {showAdmin && (
+                      <button role="menuitem" onClick={()=>{setExportOpen(true); setUtilOpen(false);}}
+                        className="flex items-center gap-2 w-full h-9 px-3 rounded-lg text-xs font-semibold text-white bg-teal-500 hover:bg-teal-600 shadow-sm transition-colors">
+                        <span aria-hidden="true">📊</span><span>Export</span>
+                      </button>
+                    )}
+                    {showAdmin && (
+                      <button role="menuitem" onClick={()=>{setHolidayOpen(true); setUtilOpen(false);}}
+                        className="flex items-center gap-2 w-full h-9 px-3 rounded-lg text-xs font-semibold text-white bg-orange-500 hover:bg-orange-600 shadow-sm transition-colors">
+                        <span aria-hidden="true">🏖️</span><span>Libur</span>
+                      </button>
+                    )}
+                  </div>
+                </>)}
+              </div>
+            );
+          })()}
+
+          {/* Aksi utama — tambah booking */}
+          <button onClick={()=>openNew()} aria-label="Tambah booking baru"
+            className="flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition-colors">
+            <span className="text-base leading-none" aria-hidden="true">+</span>
+            <span className="hidden sm:inline">Booking</span>
           </button>
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      {currentPage === "dashboard"
+        ? <DashboardPage bookings={bookings}/>
+        : <div className="flex flex-1 overflow-hidden">
         {currentUser?.role === "cs" ? (
           /* ── CS Agent: sidebar mini menampilkan info agent mereka ── */
           (() => {
@@ -2546,7 +3291,11 @@ function App() {
             );
           })()
         ) : (
-          <RoomSidebar rooms={ROOMS} selectedRooms={selectedRooms} onToggle={toggleRoom} onSelectAll={selectAllRooms} onClearAll={clearAllRooms}/>
+          <RoomSidebar rooms={ROOMS} selectedRooms={selectedRooms} onToggle={toggleRoom} onSelectAll={selectAllRooms} onClearAll={clearAllRooms}
+            baseDate={baseDate} onPickDate={setBaseDate}
+            searchQuery={searchQuery}
+            onSearchChange={v => { setSearchQuery(v); if (!v.trim()) setSearchListView(false); }}
+            onSearchSubmit={() => { if (searchQuery.trim()) setSearchListView(true); }}/>
         )}
         <main className="flex-1 flex flex-col overflow-hidden bg-white">
           {loading && bookings.length===0 ? (
@@ -2556,21 +3305,25 @@ function App() {
                 <div className="text-sm">Memuat data dari Supabase...</div>
               </div>
             </div>
-          ) : selectedRooms.length === 0 ? (
+          ) : (searchListView && searchQuery.trim()) ? (
+            <SearchResultsView bookings={bookings} rooms={ROOMS} query={searchQuery}
+              onRowClick={b=>setDetailBooking(b)} onBack={()=>setSearchListView(false)}/>
+          ) : (selectedRooms.length === 0 && !searchQuery.trim()) ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="text-center">
                 <div className="text-4xl mb-3">👆</div>
                 <div className="text-sm font-semibold text-slate-600 mb-1">Belum ada agent dipilih</div>
-                <div className="text-xs text-slate-400">Pilih minimal satu agent di sidebar untuk melihat jadwal</div>
+                <div className="text-xs text-slate-400">Pilih minimal satu agent di sidebar, atau gunakan kolom pencarian</div>
               </div>
             </div>
           ) : (
             <CalendarGrid weekDays={weekDays} bookings={bookings} rooms={ROOMS}
-              selectedRooms={selectedRooms} currentUser={currentUser}
+              selectedRooms={selectedRooms} currentUser={currentUser} searchQuery={searchQuery}
               onSlotClick={openNew} onChipClick={b=>setDetailBooking(b)} holidays={holidays}/>
           )}
         </main>
       </div>
+      }
 
       <BookingModal isOpen={modalOpen} onClose={()=>setModalOpen(false)}
         onSave={handleSave} onDelete={handleDelete} rooms={ROOMS}
