@@ -218,15 +218,34 @@ const ADMIN_EMAILS = [
   "faisal.nugroho@majoo.id",
   "faisal@majoo.id",
   "andi@majoo.id",
-  "suro@majoo.id",
-  "taufiq.hadiyanto@majoo.id",
-  // rahmat.hidayat@majoo.id dipindah ke CS_AGENT_MAP
+  // suro@majoo.id, taufiq.hadiyanto@majoo.id & rahmat.hidayat dipindah ke CS_AGENT_MAP
 ];
 
 // ─── CUSTOMER SUPPORT ROLE ────────────────────────────────────────────────────
-// Mapping email CS Agent → room_id (agent mereka di ROOMS)
+// Mapping email CS Agent → room_id (agent mereka di ROOMS).
+// Email yang terdaftar di sini otomatis mendapat role "cs" (Customer Support Agent)
+// saat mendaftar, dengan tampilan kalender yang terkunci ke agent masing-masing.
 const CS_AGENT_MAP = {
-  "rahmat.hidayat@majoo.id": 21, // Rahmat Hidayat — Medan
+  "fahmi.rasyied7574@majoo.com":   2,  // Fahmi Rasyied — Jakarta Selatan
+  "loudy@majoo.com":               3,  // Loudy Vabio Yanlaukel — Bekasi
+  "sidikpermana@majoo.com":        4,  // Mukhamad Sidik Permana — Jakarta
+  "suro@majoo.id":                 5,  // Suro Rahardi — Tangerang
+  "muhammad.subagya@majoo.com":    6,  // Muhammad Wildannul Ihsan Subagya — Bogor
+  "leo.the7042@majoo.com":         7,  // Leo The — Jakarta Barat
+  "taufiq.hadiyanto@majoo.id":     9,  // Taufiq Hadiyanto — Bandung
+  "ricky.widiarto7501@majoo.com":  10, // Ricky Widiarto — Semarang
+  "salman.robby7572@majoo.com":    11, // Salman Zikri Robby — Yogyakarta
+  "agus.hariyadi7987@majoo.com":   12, // Agus Hariyadi — Surabaya
+  "kadek.sedana8129@majoo.com":    13, // Kadek Vincky Sedana — Denpasar
+  "dhafa.jusanto8590@majoo.com":   14, // Dhafa Jusanto — Malang
+  "aldy.wahyudi@majoo.com":        15, // Aldy Rhama Wahyudi — Jambi
+  "andhika.syahputra@majoo.com":   16, // Andika Syahputra — Makassar
+  "deni.setiawan8818@majoo.com":   17, // Deni Setiawan — Pontianak
+  "efri.hidayat@majoo.com":        18, // Efri Hidayat — Pekanbaru
+  "m.azlansyah@majoo.com":         19, // M. Azlan Syah Putra — Banjarmasin
+  "onel.ramadani8827@majoo.com":   20, // Onel Ramadani — Balikpapan
+  "rahmat.hidayat@majoo.com":      21, // Rahmat Hidayat — Medan
+  "rahmat.hidayat@majoo.id":       21, // Rahmat Hidayat — alias email lama
 };
 const CS_EMAILS = Object.keys(CS_AGENT_MAP);
 
