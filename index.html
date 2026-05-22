@@ -1785,6 +1785,7 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
   };
 
   const rows = [
+    booking.sch_code   && {icon:"🔖", label:"SCH Code",   val:booking.sch_code},
     {icon:"🏢", label:"Agent",   val:room.name + (room.city ? ` — 📍 ${room.city}` : "")},
     booking.visit_type && {icon: booking.visit_type==="Online"?"🌐":"📍", label:"Type Visit", val: booking.visit_type},
     booking.activity   && {icon:"⚡", label:"Activity",  val: booking.activity},
@@ -1801,7 +1802,10 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
         <div className="h-2" style={{backgroundColor:room.colorHex}}/>
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-          <h2 className="text-base font-bold text-slate-800 pr-2">{booking.title}</h2>
+          <div>
+            {booking.sch_code && <div className="text-xs font-semibold text-teal-600 mb-0.5">{booking.sch_code}</div>}
+            <h2 className="text-base font-bold text-slate-800 pr-2">{booking.title}</h2>
+          </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
         </div>
 
@@ -1866,7 +1870,7 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
         )}
         <div className="px-6 pb-5 flex gap-2">
           <button onClick={onClose} className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">Tutup</button>
-          {canAct && isAdmin && (
+          {canAct && (isAdmin || isOwner) && (
             <button onClick={()=>onEdit(booking)} className="flex-1 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700">Edit</button>
           )}
           {canAct && (
@@ -2103,7 +2107,7 @@ function gcalEventBody(data, roomName, includeConference = false) {
     data.notes      ? `📝 Catatan: ${data.notes}` : "",
   ].filter(Boolean).join("\n");
   const body = {
-    summary: data.title,
+    summary: data.sch_code ? `${data.sch_code} - ${data.title}` : data.title,
     description: desc,
     start: { dateTime: `${data.date}T${data.start_time}:00`, timeZone: GCAL_TIMEZONE },
     end:   { dateTime: `${data.date}T${data.end_time}:00`,   timeZone: GCAL_TIMEZONE },
@@ -2482,17 +2486,22 @@ function KpiDetailModal({ type, bookings, bookingHours, onClose }) {
 }
 
 // ─── DASHBOARD PAGE ───────────────────────────────────────────────────────────
-function DashboardPage({ bookings }) {
+function DashboardPage({ bookings, currentUser }) {
   const today = new Date();
   const fmtDate = d => {
     const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
     return `${y}-${m}-${day}`;
   };
-  const firstOfMonth = () => fmtDate(new Date(today.getFullYear(), today.getMonth(), 1));
+  const firstOfMonth  = () => fmtDate(new Date(today.getFullYear(), today.getMonth(), 1));
+  const lastOfMonth   = () => fmtDate(new Date(today.getFullYear(), today.getMonth()+1, 0));
 
-  const [selectedAgent, setSelectedAgent] = useState("all");
+  // CS Agent: locked ke agent mereka sendiri
+  const isCS      = currentUser?.role === "cs";
+  const csRoomId  = isCS ? String(CS_AGENT_MAP[currentUser?.email] ?? "") : null;
+
+  const [selectedAgent, setSelectedAgent] = useState(() => isCS ? (csRoomId || "all") : "all");
   const [dateFrom, setDateFrom]           = useState(firstOfMonth);
-  const [dateTo,   setDateTo]             = useState(() => fmtDate(today));
+  const [dateTo,   setDateTo]             = useState(lastOfMonth);
   const [detailKey, setDetailKey]         = useState(null);   // KPI tile yang sedang dibuka detailnya
 
   const colChartRef = useRef(null);
@@ -2509,11 +2518,12 @@ function DashboardPage({ bookings }) {
       w.setDate(w.getDate() - (day===0?6:day-1));     // mundur ke Senin
       setDateFrom(fmtDate(w)); setDateTo(fmtDate(today));
     } else if (type === "month") {
+      // Full bulan: 1 - hari terakhir bulan ini
       setDateFrom(fmtDate(new Date(today.getFullYear(), today.getMonth(), 1)));
-      setDateTo(fmtDate(today));
+      setDateTo(fmtDate(new Date(today.getFullYear(), today.getMonth()+1, 0)));
     } else if (type === "year") {
       setDateFrom(fmtDate(new Date(today.getFullYear(), 0, 1)));
-      setDateTo(fmtDate(today));
+      setDateTo(fmtDate(new Date(today.getFullYear(), 11, 31)));
     }
   };
 
@@ -2661,16 +2671,27 @@ function DashboardPage({ bookings }) {
         {/* Filter Bar */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
           <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Agent</label>
-              <select value={selectedAgent} onChange={e=>setSelectedAgent(e.target.value)}
-                className="border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-teal-400 min-w-[200px]">
-                <option value="all">Semua Agent</option>
-                {ROOMS.map(r=>(
-                  <option key={r.id} value={String(r.id)}>{r.name}{r.city?` — ${r.city}`:""}</option>
-                ))}
-              </select>
-            </div>
+            {isCS ? (
+              /* CS: tampilkan nama agent mereka, tidak bisa diganti */
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Agent</label>
+                <div className="border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 bg-slate-50 min-w-[200px] flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{backgroundColor: ROOMS.find(r=>String(r.id)===csRoomId)?.colorHex || "#64748b"}}/>
+                  {ROOMS.find(r=>String(r.id)===csRoomId)?.name || "—"}
+                </div>
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Agent</label>
+                <select value={selectedAgent} onChange={e=>setSelectedAgent(e.target.value)}
+                  className="border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-teal-400 min-w-[200px]">
+                  <option value="all">Semua Agent</option>
+                  {ROOMS.map(r=>(
+                    <option key={r.id} value={String(r.id)}>{r.name}{r.city?` — ${r.city}`:""}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Dari</label>
               <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}
@@ -2752,8 +2773,8 @@ function DashboardPage({ bookings }) {
           </div>
         </div>
 
-        {/* All agents summary table */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        {/* All agents summary table — disembunyikan untuk CS */}
+        {!isCS && <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
             <h3 className="font-bold text-slate-700 text-sm">👥 Ringkasan Semua Agent</h3>
             <span className="text-xs text-slate-400 bg-slate-100 px-3 py-1 rounded-full">
@@ -2812,7 +2833,7 @@ function DashboardPage({ bookings }) {
               </tfoot>
             </table>
           </div>
-        </div>
+        </div>}
 
         {/* Detail modal saat KPI tile diklik */}
         {detailKey && (
@@ -3283,7 +3304,7 @@ function App() {
       </header>
 
       {currentPage === "dashboard"
-        ? <DashboardPage bookings={bookings}/>
+        ? <DashboardPage bookings={bookings} currentUser={currentUser}/>
         : <div className="flex flex-1 overflow-hidden">
         {currentUser?.role === "cs" ? (
           /* ── CS Agent: sidebar mini menampilkan info agent mereka ── */
