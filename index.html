@@ -746,6 +746,10 @@ const STATUS_ASSIGN_CFG    = {
   "Need Assign CRM":  { color:"#ef4444", bg:"#fee2e2", label:"🔴 Need Assign CRM" },
   "Done Assign CRM":  { color:"#10b981", bg:"#d1fae5", label:"✅ Done Assign CRM" },
 };
+const OUTCOME_CFG = {
+  "Reschedule": { color:"#f59e0b", bg:"#fef3c7", label:"🔄 Reschedule" },
+  "Cancel":     { color:"#ef4444", bg:"#fee2e2", label:"❌ Batal" },
+};
 
 // ─── MINI CALENDAR (sidebar) ──────────────────────────────────────────────────
 // Kalender bulanan ringkas ala Google Calendar. Klik tanggal => pindah minggu aktif.
@@ -910,9 +914,10 @@ function BookingChip({ booking, room, currentUser, col, totalCols, onClick }) {
   const top    = (start/60)*SLOT_H;
   const height = Math.max((duration/60)*SLOT_H-4, 24);
   const GAP    = 2;
-  const isOwn  = booking.booked_by_email === currentUser?.email;
+  const isOwn     = booking.booked_by_email === currentUser?.email;
   const isPending  = booking.approval_status === "pending";
   const isRejected = booking.approval_status === "rejected";
+  const outcomeCfg = booking.outcome ? OUTCOME_CFG[booking.outcome] : null;
   return (
     <div className="absolute rounded-lg px-2 py-1 booking-chip cursor-pointer hover:z-10 transition-shadow overflow-hidden"
       style={{
@@ -922,15 +927,22 @@ function BookingChip({ booking, room, currentUser, col, totalCols, onClick }) {
         backgroundColor: isPending ? room.colorHex+"15" : room.colorHex+"22",
         borderLeft: `3px ${isPending?"dashed":"solid"} ${room.colorHex}`,
         color: room.colorHex,
-        opacity: isRejected ? 0.4 : 1,
+        opacity: (isRejected || booking.outcome) ? 0.5 : 1,
         boxShadow: isPending ? "none" : "0 1px 3px rgba(0,0,0,0.08)",
+        textDecoration: booking.outcome ? "line-through" : "none",
       }}
       onClick={()=>onClick(booking)}>
-      <div className="font-semibold truncate leading-tight">{booking.title}</div>
+      <div className="font-semibold truncate leading-tight" style={{textDecoration: booking.outcome ? "line-through" : "none"}}>{booking.title}</div>
       {isPending && (
         <div className="inline-flex items-center gap-0.5 mt-0.5 px-1 py-0.5 rounded text-[9px] font-bold leading-none"
-          style={{backgroundColor:"#fef3c7", color:"#92400e", border:"1px dashed #f59e0b"}}>
+          style={{backgroundColor:"#fef3c7", color:"#92400e", border:"1px dashed #f59e0b", textDecoration:"none"}}>
           ⏳ Need Approval
+        </div>
+      )}
+      {outcomeCfg && (
+        <div className="inline-flex items-center gap-0.5 mt-0.5 px-1 py-0.5 rounded text-[9px] font-bold leading-none"
+          style={{backgroundColor:outcomeCfg.bg, color:outcomeCfg.color, border:`1px solid ${outcomeCfg.color}`, textDecoration:"none"}}>
+          {outcomeCfg.label}
         </div>
       )}
       {height>28 && booking.activity && <div className="text-xs opacity-80 truncate">{booking.activity}</div>}
@@ -1799,13 +1811,22 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
   const canAct  = isOwner || currentUser?.role === "admin";
   const isAdmin = currentUser?.role === "admin";
 
-  const jadwalCfg = STATUS_JADWAL_CFG[booking.status_jadwal];
-  const assignCfg = STATUS_ASSIGN_CFG[booking.status_assignment];
+  const jadwalCfg  = STATUS_JADWAL_CFG[booking.status_jadwal];
+  const assignCfg  = STATUS_ASSIGN_CFG[booking.status_assignment];
+  const outcomeCfg = booking.outcome ? OUTCOME_CFG[booking.outcome] : null;
 
   const handleToggleAssign = async () => {
     const next = booking.status_assignment === "Need Assign CRM" ? "Done Assign CRM" : "Need Assign CRM";
     setUpdatingStatus(true);
     await onUpdateStatus(booking.id, { status_assignment: next });
+    setUpdatingStatus(false);
+  };
+
+  const handleSetOutcome = async (val) => {
+    // Toggle: klik lagi pada outcome yang sama → reset ke null
+    const next = booking.outcome === val ? null : val;
+    setUpdatingStatus(true);
+    await onUpdateStatus(booking.id, { outcome: next });
     setUpdatingStatus(false);
   };
 
@@ -1850,6 +1871,12 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
             <span className="text-xs font-bold px-2.5 py-1 rounded-full"
               style={{backgroundColor:assignCfg.bg, color:assignCfg.color}}>
               {assignCfg.label}
+            </span>
+          )}
+          {outcomeCfg && (
+            <span className="text-xs font-bold px-2.5 py-1 rounded-full"
+              style={{backgroundColor:outcomeCfg.bg, color:outcomeCfg.color}}>
+              {outcomeCfg.label}
             </span>
           )}
         </div>
@@ -1925,6 +1952,32 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
           </div>
         )}
 
+        {/* Reschedule / Batal outcome — visible to owner + admin */}
+        {canAct && booking.approval_status !== "rejected" && (
+          <div className="mx-6 mb-4 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+            <div className="text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wider">Update Hasil Kunjungan</div>
+            <div className="flex gap-2">
+              <button onClick={()=>handleSetOutcome("Reschedule")} disabled={updatingStatus}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50 border`}
+                style={booking.outcome==="Reschedule"
+                  ? {backgroundColor:OUTCOME_CFG.Reschedule.bg, color:OUTCOME_CFG.Reschedule.color, borderColor:OUTCOME_CFG.Reschedule.color}
+                  : {backgroundColor:"#fff", color:"#92400e", borderColor:"#fcd34d"}}>
+                🔄 {booking.outcome==="Reschedule" ? "✓ Reschedule (klik reset)" : "Reschedule"}
+              </button>
+              <button onClick={()=>handleSetOutcome("Cancel")} disabled={updatingStatus}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50 border`}
+                style={booking.outcome==="Cancel"
+                  ? {backgroundColor:OUTCOME_CFG.Cancel.bg, color:OUTCOME_CFG.Cancel.color, borderColor:OUTCOME_CFG.Cancel.color}
+                  : {backgroundColor:"#fff", color:"#dc2626", borderColor:"#fca5a5"}}>
+                ❌ {booking.outcome==="Cancel" ? "✓ Batal (klik reset)" : "Batal"}
+              </button>
+            </div>
+            {booking.outcome && (
+              <p className="text-[10px] text-slate-400 mt-1.5 text-center">Klik tombol aktif untuk mereset ke jadwal normal</p>
+            )}
+          </div>
+        )}
+
         {!canAct && (
           <div className="mx-6 mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800">
             Booking ini milik <strong>{booking.booked_by_name||"karyawan lain"}</strong>. Hanya pemilik atau Admin yang dapat mengubahnya.
@@ -1932,13 +1985,13 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
         )}
         <div className="px-6 pb-5 flex gap-2">
           <button onClick={onClose} className="flex-1 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">Tutup</button>
-          {canAct && (isAdmin || isOwner) && (
+          {canAct && (isAdmin || isOwner) && !booking.outcome && (
             <button onClick={()=>onEdit(booking)} className="flex-1 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700">Edit</button>
           )}
           {canAct && (
-            <button onClick={()=>{ if(window.confirm("Batalkan booking ini?")) onDelete(booking.id); }}
+            <button onClick={()=>{ if(window.confirm("Hapus permanen booking ini dari sistem?")) onDelete(booking.id); }}
               className="flex-1 py-2 rounded-lg bg-red-500 text-white text-sm font-semibold hover:bg-red-600">
-              Batalkan
+              Hapus
             </button>
           )}
         </div>
@@ -2634,10 +2687,13 @@ function DashboardPage({ bookings, currentUser }) {
   const [selectedAgent, setSelectedAgent] = useState(() => isCS ? (csRoomId || "all") : "all");
   const [dateFrom, setDateFrom]           = useState(firstOfMonth);
   const [dateTo,   setDateTo]             = useState(lastOfMonth);
-  const [detailKey, setDetailKey]         = useState(null);   // KPI tile yang sedang dibuka detailnya
+  const [detailKey,  setDetailKey]  = useState(null);   // KPI tile semua jadwal
+  const [detailKeyQ, setDetailKeyQ] = useState(null);   // KPI tile realisasi
 
-  const colChartRef = useRef(null);
-  const actChartRef = useRef(null);
+  const colChartRef  = useRef(null);
+  const actChartRef  = useRef(null);
+  const colChartRef2 = useRef(null);
+  const actChartRef2 = useRef(null);
 
   const applyPreset = (type) => {
     if (type === "today") {
@@ -2676,7 +2732,7 @@ function DashboardPage({ bookings, currentUser }) {
     return act ? act.duration : 0;
   };
 
-  // KPI
+  // KPI — Semua jadwal
   const kpis = useMemo(() => ({
     total:    filtered.length,
     online:   filtered.filter(b => (b.visit_type||"Online") !== "Offline").length,
@@ -2684,6 +2740,21 @@ function DashboardPage({ bookings, currentUser }) {
     uniqAct:  new Set(filtered.map(b=>b.activity).filter(Boolean)).size,
     totalHours: filtered.reduce((s,b) => s + bookingHours(b), 0),
   }), [filtered]);
+
+  // Realisasi = Done Assign CRM & bukan Reschedule/Cancel
+  const filteredQ = useMemo(() =>
+    filtered.filter(b => b.status_assignment === "Done Assign CRM" && b.outcome !== "Reschedule" && b.outcome !== "Cancel"),
+  [filtered]);
+
+  const kpisQ = useMemo(() => ({
+    total:      filteredQ.length,
+    online:     filteredQ.filter(b => (b.visit_type||"Online") !== "Offline").length,
+    offline:    filteredQ.filter(b => b.visit_type === "Offline").length,
+    uniqAct:    new Set(filteredQ.map(b=>b.activity).filter(Boolean)).size,
+    totalHours: filteredQ.reduce((s,b) => s + bookingHours(b), 0),
+    reschedule: filtered.filter(b => b.outcome === "Reschedule").length,
+    cancel:     filtered.filter(b => b.outcome === "Cancel").length,
+  }), [filteredQ, filtered]);
 
   // Monthly chart data (stacked Online/Offline)
   const monthlyData = useMemo(() => {
@@ -2712,20 +2783,57 @@ function DashboardPage({ bookings, currentUser }) {
     };
   }, [filtered]);
 
+  // Realisasi charts
+  const monthlyDataQ = useMemo(() => {
+    const map = {};
+    filteredQ.forEach(b => {
+      const key = b.date.substring(0,7);
+      if (!map[key]) map[key] = { online:0, offline:0 };
+      b.visit_type === "Offline" ? map[key].offline++ : map[key].online++;
+    });
+    const keys = Object.keys(map).sort();
+    return {
+      labels:  keys.map(k => { const [y,m]=k.split("-"); return new Date(Number(y),Number(m)-1).toLocaleDateString("id-ID",{month:"short",year:"2-digit"}); }),
+      online:  keys.map(k=>map[k].online),
+      offline: keys.map(k=>map[k].offline),
+    };
+  }, [filteredQ]);
+
+  const activityDataQ = useMemo(() => {
+    const counts = {};
+    filteredQ.forEach(b => { if(b.activity) counts[b.activity] = (counts[b.activity]||0)+1; });
+    const sorted = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    return {
+      labels: sorted.map(([a]) => a.length>32 ? a.substring(0,32)+"…" : a),
+      data:   sorted.map(([,c]) => c),
+    };
+  }, [filteredQ]);
+
   // All-agents summary table (date-filtered only)
   const agentSummary = useMemo(() => {
     const df = bookings.filter(b => (!dateFrom||b.date>=dateFrom) && (!dateTo||b.date<=dateTo));
     return ROOMS.map(room => {
       const rb = df.filter(b => String(b.room_id)===String(room.id));
+      const rbQ = rb.filter(b => b.status_assignment==="Done Assign CRM" && b.outcome!=="Reschedule" && b.outcome!=="Cancel");
       const cmap = {}; rb.forEach(b=>{if(b.activity) cmap[b.activity]=(cmap[b.activity]||0)+1;});
       const topAct = Object.entries(cmap).sort((a,b)=>b[1]-a[1])[0]?.[0] || "—";
-      return { room, total:rb.length, online:rb.filter(b=>(b.visit_type||"Online")!=="Offline").length, offline:rb.filter(b=>b.visit_type==="Offline").length, hours:rb.reduce((s,b)=>s+bookingHours(b),0), topAct };
+      return {
+        room,
+        total:rb.length, online:rb.filter(b=>(b.visit_type||"Online")!=="Offline").length, offline:rb.filter(b=>b.visit_type==="Offline").length, hours:rb.reduce((s,b)=>s+bookingHours(b),0),
+        realisasi: rbQ.length, realisasiHours: rbQ.reduce((s,b)=>s+bookingHours(b),0),
+        reschedule: rb.filter(b=>b.outcome==="Reschedule").length,
+        cancel: rb.filter(b=>b.outcome==="Cancel").length,
+        topAct,
+      };
     }).sort((a,b)=>b.total-a.total);
   }, [bookings, dateFrom, dateTo]);
-  const grandTotal   = agentSummary.reduce((s,a)=>s+a.total,  0);
-  const grandOnline  = agentSummary.reduce((s,a)=>s+a.online, 0);
-  const grandOffline = agentSummary.reduce((s,a)=>s+a.offline,0);
-  const grandHours   = agentSummary.reduce((s,a)=>s+a.hours,  0);
+  const grandTotal      = agentSummary.reduce((s,a)=>s+a.total,      0);
+  const grandOnline     = agentSummary.reduce((s,a)=>s+a.online,     0);
+  const grandOffline    = agentSummary.reduce((s,a)=>s+a.offline,    0);
+  const grandHours      = agentSummary.reduce((s,a)=>s+a.hours,      0);
+  const grandRealisasi  = agentSummary.reduce((s,a)=>s+a.realisasi,  0);
+  const grandReschedule = agentSummary.reduce((s,a)=>s+a.reschedule, 0);
+  const grandCancel     = agentSummary.reduce((s,a)=>s+a.cancel,     0);
   // Format jam: bilangan bulat tanpa desimal, selain itu 1 angka di belakang koma
   const fmtHours = h => (h % 1 === 0 ? String(h) : h.toFixed(1));
 
@@ -2733,9 +2841,10 @@ function DashboardPage({ bookings, currentUser }) {
   const targetIndividual = useMemo(() => proratedTarget(dateFrom, dateTo), [dateFrom, dateTo]);
   const targetNasional   = targetIndividual * ROOMS.length;
   // Target sesuai filter: 1 agent → individu, "Semua Agent" → nasional
-  const targetScope  = selectedAgent === "all" ? targetNasional : targetIndividual;
-  const progressPct  = targetScope > 0 ? (kpis.totalHours / targetScope) * 100 : 0;
-  const nasionalPct  = targetNasional > 0 ? (grandHours / targetNasional) * 100 : 0;
+  const targetScope    = selectedAgent === "all" ? targetNasional : targetIndividual;
+  const progressPct    = targetScope > 0 ? (kpis.totalHours / targetScope) * 100 : 0;
+  const progressPctQ   = targetScope > 0 ? (kpisQ.totalHours / targetScope) * 100 : 0;
+  const nasionalPct    = targetNasional > 0 ? (grandHours / targetNasional) * 100 : 0;
 
   // Column chart
   useEffect(() => {
@@ -2787,6 +2896,50 @@ function DashboardPage({ bookings, currentUser }) {
       }
     });
   }, [activityData]);
+
+  // Realisasi charts useEffect
+  useEffect(() => {
+    if (!colChartRef2.current) return;
+    const existing = Chart.getChart(colChartRef2.current);
+    if (existing) existing.destroy();
+    if (!monthlyDataQ.labels.length) return;
+    new Chart(colChartRef2.current, {
+      type: "bar",
+      data: {
+        labels: monthlyDataQ.labels,
+        datasets: [
+          { label:"Online 🌐",  data:monthlyDataQ.online,  backgroundColor:"#2DBDB6", borderRadius:5 },
+          { label:"Offline 📍", data:monthlyDataQ.offline, backgroundColor:"#f59e0b", borderRadius:5 },
+        ]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ position:"top" } },
+        scales:{ x:{ stacked:true, grid:{ display:false } }, y:{ stacked:true, beginAtZero:true, ticks:{ precision:0 } } }
+      }
+    });
+  }, [monthlyDataQ]);
+
+  useEffect(() => {
+    if (!actChartRef2.current) return;
+    const existing = Chart.getChart(actChartRef2.current);
+    if (existing) existing.destroy();
+    if (!activityDataQ.labels.length) return;
+    new Chart(actChartRef2.current, {
+      type: "bar",
+      data: {
+        labels: activityDataQ.labels,
+        datasets:[{ label:"Jumlah", data:activityDataQ.data,
+          backgroundColor: activityDataQ.data.map((_,i)=>`hsl(${142+i*9},${55-i%3*5}%,${42+i%4*4}%)`),
+          borderRadius:4 }]
+      },
+      options: {
+        indexAxis:"y", responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ display:false } },
+        scales:{ x:{ beginAtZero:true, ticks:{ precision:0 } }, y:{ grid:{ display:false } } }
+      }
+    });
+  }, [activityDataQ]);
 
   const selectedRoom = ROOMS.find(r=>String(r.id)===selectedAgent);
 
@@ -2848,6 +3001,13 @@ function DashboardPage({ bookings, currentUser }) {
           </div>
         </div>
 
+        {/* ── SECTION 1: Semua Jadwal ── */}
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-px bg-slate-200"/>
+          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider px-2">📋 Semua Jadwal</span>
+          <div className="flex-1 h-px bg-slate-200"/>
+        </div>
+
         {/* KPI Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
           {[
@@ -2905,6 +3065,81 @@ function DashboardPage({ bookings, currentUser }) {
           </div>
         </div>
 
+        {/* ── SECTION 2: Realisasi ── */}
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-px bg-emerald-200"/>
+          <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider px-2">✅ Realisasi (Done Assign CRM)</span>
+          <div className="flex-1 h-px bg-emerald-200"/>
+        </div>
+
+        {/* Realisasi stat pills */}
+        <div className="flex flex-wrap gap-2">
+          <span className="inline-flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold px-3 py-1.5 rounded-full">
+            🔄 Reschedule: <strong>{kpisQ.reschedule}</strong>
+          </span>
+          <span className="inline-flex items-center gap-1.5 bg-red-50 border border-red-200 text-red-700 text-xs font-semibold px-3 py-1.5 rounded-full">
+            ❌ Batal: <strong>{kpisQ.cancel}</strong>
+          </span>
+          <span className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 text-slate-600 text-xs font-semibold px-3 py-1.5 rounded-full">
+            📊 Total terjadwal dikurangi reschedule/batal
+          </span>
+        </div>
+
+        {/* KPI Cards Realisasi */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          {[
+            { id:"total",      icon:"📋", label:"Total Realisasi",  val:kpisQ.total,   clr:"text-emerald-600",  bg:"bg-emerald-50",  border:"border-emerald-200" },
+            { id:"online",     icon:"🌐", label:"Online",            val:kpisQ.online,  clr:"text-teal-600",     bg:"bg-teal-50",     border:"border-teal-200"    },
+            { id:"offline",    icon:"📍", label:"Offline",           val:kpisQ.offline, clr:"text-amber-600",    bg:"bg-amber-50",    border:"border-amber-200"   },
+            { id:"uniqAct",    icon:"⚡", label:"Jenis Activity",    val:kpisQ.uniqAct, clr:"text-purple-600",   bg:"bg-purple-50",   border:"border-purple-200"  },
+            { id:"totalHours", icon:"⏱️", label:"Total Hours", val:(kpisQ.totalHours%1===0?kpisQ.totalHours:kpisQ.totalHours.toFixed(1)), suffix:" jam", clr:"text-indigo-600", bg:"bg-indigo-50", border:"border-indigo-200" },
+            { icon:"🎯", label:"% Target",
+              val:`${Math.round(progressPctQ)}%`,
+              clr: progressPctQ>=100 ? "text-emerald-600" : "text-rose-600",
+              bg:  progressPctQ>=100 ? "bg-emerald-50"    : "bg-rose-50",
+              border: progressPctQ>=100 ? "border-emerald-200" : "border-rose-200",
+              bar: progressPctQ,
+              sub: `${fmtHours(kpisQ.totalHours)} / ${fmtHours(targetScope)} jam · Realisasi` },
+          ].map(c=>(
+            <div key={c.label} onClick={c.id ? ()=>setDetailKeyQ(c.id) : undefined}
+              title={c.id ? "Klik untuk lihat detail" : undefined}
+              className={`bg-white rounded-2xl border ${c.border} shadow-sm p-5 ${c.id ? "cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all" : ""}`}>
+              <div className={`text-xl ${c.bg} w-10 h-10 rounded-xl flex items-center justify-center mb-3`}>{c.icon}</div>
+              <div className={`text-3xl font-bold ${c.clr}`}>{c.val}{c.suffix && <span className="text-base font-semibold opacity-70">{c.suffix}</span>}</div>
+              <div className="text-xs text-slate-500 font-medium mt-1 flex items-center gap-1">{c.label}{c.id && <span className="text-slate-300">›</span>}</div>
+              {c.bar !== undefined && (
+                <div className="mt-2">
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${progressPctQ>=100 ? "bg-emerald-500" : "bg-rose-500"}`}
+                      style={{width:Math.min(c.bar,100)+"%"}}/>
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1 truncate">{c.sub}</div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Realisasi Charts */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div className="bg-white rounded-2xl border border-emerald-200 shadow-sm p-5">
+            <h3 className="font-bold text-emerald-700 mb-4 text-sm">📈 Realisasi per Bulan (Online vs Offline)</h3>
+            {monthlyDataQ.labels.length === 0
+              ? <div className="h-60 flex items-center justify-center text-slate-400 text-sm">Tidak ada data realisasi di rentang ini</div>
+              : <div className="h-60"><canvas ref={colChartRef2}/></div>
+            }
+          </div>
+          <div className="bg-white rounded-2xl border border-emerald-200 shadow-sm p-5">
+            <h3 className="font-bold text-emerald-700 mb-4 text-sm">⚡ Activity Realisasi</h3>
+            {activityDataQ.labels.length === 0
+              ? <div className="h-60 flex items-center justify-center text-slate-400 text-sm">Tidak ada data realisasi di rentang ini</div>
+              : <div className="overflow-y-auto" style={{height: Math.min(480, Math.max(240, activityDataQ.labels.length*30))+"px"}}>
+                  <canvas ref={actChartRef2} style={{height: Math.max(240, activityDataQ.labels.length*30)+"px"}}/>
+                </div>
+            }
+          </div>
+        </div>
+
         {/* All agents summary table — disembunyikan untuk CS */}
         {!isCS && <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
@@ -2921,13 +3156,15 @@ function DashboardPage({ bookings, currentUser }) {
                   <th className="px-4 py-3 text-center font-semibold">Total</th>
                   <th className="px-4 py-3 text-center font-semibold">Online 🌐</th>
                   <th className="px-4 py-3 text-center font-semibold">Offline 📍</th>
+                  <th className="px-4 py-3 text-center font-semibold text-emerald-600">✅ Realisasi</th>
+                  <th className="px-4 py-3 text-center font-semibold text-amber-600">🔄 RS</th>
+                  <th className="px-4 py-3 text-center font-semibold text-red-500">❌ Batal</th>
                   <th className="px-4 py-3 text-center font-semibold">Total Jam ⏱️</th>
                   <th className="px-4 py-3 text-center font-semibold">% Target 🎯</th>
-                  <th className="px-5 py-3 text-left font-semibold hidden md:table-cell">Top Activity</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {agentSummary.map(({room,total,online,offline,hours,topAct})=>{
+                {agentSummary.map(({room,total,online,offline,hours,realisasi,reschedule,cancel,topAct})=>{
                   const pct = targetIndividual > 0 ? Math.round(hours/targetIndividual*100) : 0;
                   return (
                   <tr key={room.id} className={`hover:bg-slate-50 transition-colors ${total===0?"opacity-40":""}`}>
@@ -2941,11 +3178,13 @@ function DashboardPage({ bookings, currentUser }) {
                     <td className="px-4 py-3 text-center font-bold text-slate-800">{total}</td>
                     <td className="px-4 py-3 text-center font-semibold text-teal-600">{online}</td>
                     <td className="px-4 py-3 text-center font-semibold text-amber-600">{offline}</td>
+                    <td className="px-4 py-3 text-center font-bold text-emerald-600">{realisasi}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-amber-500">{reschedule||"—"}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-red-400">{cancel||"—"}</td>
                     <td className="px-4 py-3 text-center font-semibold text-indigo-600">{fmtHours(hours)}</td>
                     <td className={`px-4 py-3 text-center font-semibold ${pct>=100?"text-emerald-600":"text-rose-600"}`}>
                       {targetIndividual > 0 ? pct+"%" : "—"}
                     </td>
-                    <td className="px-5 py-3 text-xs text-slate-500 hidden md:table-cell truncate max-w-[200px]">{topAct}</td>
                   </tr>
                   );
                 })}
@@ -2956,21 +3195,29 @@ function DashboardPage({ bookings, currentUser }) {
                   <td className="px-4 py-3 text-center text-slate-800">{grandTotal}</td>
                   <td className="px-4 py-3 text-center text-teal-600">{grandOnline}</td>
                   <td className="px-4 py-3 text-center text-amber-600">{grandOffline}</td>
+                  <td className="px-4 py-3 text-center text-emerald-600">{grandRealisasi}</td>
+                  <td className="px-4 py-3 text-center text-amber-500">{grandReschedule||"—"}</td>
+                  <td className="px-4 py-3 text-center text-red-400">{grandCancel||"—"}</td>
                   <td className="px-4 py-3 text-center text-indigo-600">{fmtHours(grandHours)}</td>
                   <td className={`px-4 py-3 text-center ${nasionalPct>=100?"text-emerald-600":"text-rose-600"}`}>
                     {targetNasional > 0 ? Math.round(nasionalPct)+"%" : "—"}
                   </td>
-                  <td className="px-5 py-3 hidden md:table-cell"/>
                 </tr>
               </tfoot>
             </table>
           </div>
         </div>}
 
-        {/* Detail modal saat KPI tile diklik */}
+        {/* Detail modal saat KPI tile diklik — Semua Jadwal */}
         {detailKey && (
           <KpiDetailModal type={detailKey} bookings={filtered} bookingHours={bookingHours}
             onClose={()=>setDetailKey(null)}/>
+        )}
+
+        {/* Detail modal saat KPI tile Realisasi diklik */}
+        {detailKeyQ && (
+          <KpiDetailModal type={detailKeyQ} bookings={filteredQ} bookingHours={bookingHours}
+            onClose={()=>setDetailKeyQ(null)}/>
         )}
 
       </div>
