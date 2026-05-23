@@ -402,6 +402,8 @@ function findConflict(bookings, candidate) {
   return bookings.find(b => {
     if (b.id === candidate.id) return false;
     if (b.room_id !== candidate.room_id || b.date !== candidate.date) return false;
+    // pending & rejected tidak dianggap konflik (belum/tidak terkonfirmasi)
+    if (b.approval_status === "pending" || b.approval_status === "rejected") return false;
     return cS < toMin(b.end_time) && cE > toMin(b.start_time);
   }) || null;
 }
@@ -909,18 +911,28 @@ function BookingChip({ booking, room, currentUser, col, totalCols, onClick }) {
   const height = Math.max((duration/60)*SLOT_H-4, 24);
   const GAP    = 2;
   const isOwn  = booking.booked_by_email === currentUser?.email;
+  const isPending  = booking.approval_status === "pending";
+  const isRejected = booking.approval_status === "rejected";
   return (
-    <div className="absolute rounded-lg px-2 py-1 booking-chip cursor-pointer shadow-sm hover:shadow-md hover:z-10 transition-shadow overflow-hidden"
+    <div className="absolute rounded-lg px-2 py-1 booking-chip cursor-pointer hover:z-10 transition-shadow overflow-hidden"
       style={{
         top: top+"px", height: height+"px",
         left: `calc(${(col/totalCols)*100}% + ${col===0?4:GAP}px)`,
         width: `calc(${(1/totalCols)*100}% - ${col===0?GAP+4:GAP*2}px)`,
-        backgroundColor: room.colorHex+"22",
-        borderLeft: `3px solid ${room.colorHex}`,
+        backgroundColor: isPending ? room.colorHex+"15" : room.colorHex+"22",
+        borderLeft: `3px ${isPending?"dashed":"solid"} ${room.colorHex}`,
         color: room.colorHex,
+        opacity: isRejected ? 0.4 : 1,
+        boxShadow: isPending ? "none" : "0 1px 3px rgba(0,0,0,0.08)",
       }}
       onClick={()=>onClick(booking)}>
       <div className="font-semibold truncate leading-tight">{booking.title}</div>
+      {isPending && (
+        <div className="inline-flex items-center gap-0.5 mt-0.5 px-1 py-0.5 rounded text-[9px] font-bold leading-none"
+          style={{backgroundColor:"#fef3c7", color:"#92400e", border:"1px dashed #f59e0b"}}>
+          ⏳ Need Approval
+        </div>
+      )}
       {height>28 && booking.activity && <div className="text-xs opacity-80 truncate">{booking.activity}</div>}
       {height>40 && <div className="text-xs opacity-70 truncate">{booking.start_time}–{booking.end_time}{booking.visit_type ? ` · ${booking.visit_type==="Online"?"🌐":"📍"}` : ""}</div>}
       {height>54 && (
@@ -950,7 +962,15 @@ function CalendarGrid({ weekDays, bookings, rooms, selectedRooms, currentUser, o
   // Filter pencarian: cocokkan judul meeting, SCH Code, atau nama agent (text contains).
   // Saat sedang mencari, pilihan agent di sidebar diabaikan (pencarian global).
   const q = (searchQuery || "").trim().toLowerCase();
+  const isVisible = b => {
+    // Rejected: sembunyikan dari semua (kecuali admin)
+    if (b.approval_status === "rejected" && currentUser?.role !== "admin") return false;
+    // Pending: hanya tampil ke admin + pemilik booking
+    if (b.approval_status === "pending" && currentUser?.role !== "admin" && b.booked_by_email !== currentUser?.email) return false;
+    return true;
+  };
   const matchBooking = b => {
+    if (!isVisible(b)) return false;
     if (!q) return selectedRooms.includes(b.room_id);
     const room = rooms.find(r => r.id === b.room_id);
     const hay  = `${b.title || ""} ${b.sch_code || ""} ${room?.name || ""}`.toLowerCase();
@@ -1670,9 +1690,12 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
             </div>
           )}
           {!conflict && form.room_id && form.date && isHoliday(holidays||[], form.room_id, form.date) && (
-            <div className="bg-orange-50 border border-orange-300 rounded-lg px-4 py-3 text-sm text-orange-700 flex items-start gap-2">
+            <div className="bg-amber-50 border border-amber-300 rounded-lg px-4 py-3 text-sm text-amber-800 flex items-start gap-2">
               <span className="text-lg flex-shrink-0">🏖️</span>
-              <div><strong>Hari Libur!</strong> Agent ini dijadwalkan libur pada tanggal tersebut. Booking tidak dapat dilakukan.</div>
+              <div>
+                <strong>Hari Libur!</strong> Agent ini dijadwalkan libur pada tanggal tersebut.
+                <br/><span className="text-amber-700">Booking tetap bisa dibuat, namun akan masuk ke <strong>antrian approval admin</strong> sebelum dikonfirmasi.</span>
+              </div>
             </div>
           )}
           <div>
@@ -1756,7 +1779,7 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
             <button type="button" onClick={onClose}
               className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">Batal</button>
             {canEdit && (
-              <button type="submit" disabled={!!conflict||loading||(form.room_id&&form.date&&isHoliday(holidays||[],form.room_id,form.date))}
+              <button type="submit" disabled={!!conflict||loading}
                 className="px-5 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 shadow-sm">
                 {loading ? "Menyimpan..." : isEdit?"Simpan":"Booking Sekarang"}
               </button>
@@ -1769,7 +1792,7 @@ function BookingModal({ isOpen, onClose, onSave, onDelete, rooms, initialData, b
 }
 
 // ─── DETAIL MODAL ─────────────────────────────────────────────────────────────
-function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus, currentUser }) {
+function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus, onApproval, currentUser }) {
   if (!booking) return null;
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const isOwner = booking.booked_by_email === currentUser?.email;
@@ -1830,6 +1853,43 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
             </span>
           )}
         </div>
+
+        {/* Approval status banner */}
+        {booking.approval_status === "pending" && (
+          <div className="mx-6 mt-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800 flex items-center gap-2">
+            <span className="text-base">⏳</span>
+            <div><strong>Menunggu persetujuan admin</strong><br/>Booking ini dibuat di hari libur dan perlu disetujui.</div>
+          </div>
+        )}
+        {booking.approval_status === "rejected" && (
+          <div className="mx-6 mt-3 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-xs text-red-800 flex items-center gap-2">
+            <span className="text-base">❌</span>
+            <div><strong>Booking ditolak</strong> oleh admin.</div>
+          </div>
+        )}
+        {booking.approval_status === "approved" && (
+          <div className="mx-6 mt-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-xs text-green-800 flex items-center gap-2">
+            <span className="text-base">✅</span>
+            <div><strong>Booking disetujui</strong> — terjadwal meskipun hari libur.</div>
+          </div>
+        )}
+
+        {/* Admin: approve / reject panel */}
+        {isAdmin && booking.approval_status === "pending" && (
+          <div className="mx-6 mt-3 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+            <div className="text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wider">Approval Admin</div>
+            <div className="flex gap-2">
+              <button onClick={()=>onApproval(booking.id,"approved")}
+                className="flex-1 py-2 rounded-lg bg-green-500 text-white text-xs font-bold hover:bg-green-600 transition-colors">
+                ✅ Setujui
+              </button>
+              <button onClick={()=>onApproval(booking.id,"rejected")}
+                className="flex-1 py-2 rounded-lg bg-red-500 text-white text-xs font-bold hover:bg-red-600 transition-colors">
+                ❌ Tolak
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="p-6 space-y-3 text-sm">
           {rows.map(r=>(
@@ -1937,6 +1997,76 @@ function NotifPanel({ logs, onClose, onMarkAllRead, onClearAll }) {
             <button onClick={onMarkAllRead} className="w-full text-sm text-blue-600 hover:text-blue-700 font-semibold py-1">
               Tandai Semua Sudah Dibaca
             </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── APPROVAL PANEL ───────────────────────────────────────────────────────────
+function ApprovalPanel({ bookings, onClose, onSelect }) {
+  const pending = bookings.filter(b => b.approval_status === "pending")
+    .sort((a, b) => (a.date + a.start_time).localeCompare(b.date + b.start_time));
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end modal-overlay bg-black/20" onClick={onClose}>
+      <div className="w-full max-w-sm bg-white shadow-2xl flex flex-col h-full" onClick={e=>e.stopPropagation()}>
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-amber-50">
+          <div className="flex items-center gap-2">
+            <span className="text-xl">⏳</span>
+            <h2 className="font-bold text-slate-800">Menunggu Persetujuan</h2>
+            {pending.length > 0 && (
+              <span className="bg-amber-500 text-white text-xs rounded-full px-1.5 py-0.5 font-bold">{pending.length}</span>
+            )}
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">&times;</button>
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {pending.length === 0
+            ? (
+              <div className="text-center py-16">
+                <div className="text-4xl mb-3">✅</div>
+                <div className="text-slate-400 text-sm font-medium">Tidak ada booking yang menunggu persetujuan</div>
+              </div>
+            )
+            : pending.map(b => {
+                const room = ROOMS.find(r => r.id === b.room_id);
+                const dateStr = new Date(b.date + "T00:00").toLocaleDateString("id-ID", {
+                  weekday: "short", day: "numeric", month: "short", year: "numeric"
+                });
+                return (
+                  <button key={b.id} onClick={()=>{ onSelect(b); onClose(); }}
+                    className="w-full text-left border border-amber-200 rounded-xl p-3.5 bg-amber-50 hover:bg-amber-100 transition-colors">
+                    <div className="flex items-start gap-3">
+                      {/* Color dot */}
+                      <div className="w-3 h-3 rounded-full flex-shrink-0 mt-1" style={{backgroundColor: room?.colorHex || "#94a3b8"}}/>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-slate-800 text-sm truncate">{b.title}</div>
+                        {b.sch_code && <div className="text-xs text-teal-600 font-medium truncate">{b.sch_code}</div>}
+                        <div className="text-xs text-slate-500 mt-0.5">{room?.name || "Agent"}</div>
+                        <div className="flex items-center gap-1.5 mt-1.5 text-xs text-slate-600">
+                          <span className="bg-white border border-slate-200 rounded px-1.5 py-0.5">📅 {dateStr}</span>
+                          <span className="bg-white border border-slate-200 rounded px-1.5 py-0.5">🕐 {b.start_time}–{b.end_time}</span>
+                        </div>
+                        {b.booked_by_name && (
+                          <div className="text-xs text-slate-400 mt-1">Oleh: {b.booked_by_name}</div>
+                        )}
+                      </div>
+                      <span className="text-slate-300 text-lg leading-none flex-shrink-0">›</span>
+                    </div>
+                  </button>
+                );
+              })
+          }
+        </div>
+
+        {pending.length > 0 && (
+          <div className="px-5 py-3 border-t border-slate-100 bg-slate-50">
+            <p className="text-xs text-slate-400 text-center">Klik item untuk melihat detail dan memberikan persetujuan</p>
           </div>
         )}
       </div>
@@ -2875,6 +3005,7 @@ function App() {
   const [modalInit,     setModalInit]     = useState(null);
   const [detailBooking, setDetailBooking] = useState(null);
   const [notifOpen,     setNotifOpen]     = useState(false);
+  const [approvalOpen,  setApprovalOpen]  = useState(false);
   const [notifLogs,     setNotifLogs]     = useState(() => { const s = loadSession(); return s ? loadNotifLogs(s.id) : []; });
   const [loading,       setLoading]       = useState(false);
   const [accountOpen,   setAccountOpen]   = useState(false);
@@ -3075,8 +3206,14 @@ function App() {
       } else {
         // ── CREATE ──────────────────────────────────────────────
         const newId = "bk-"+Date.now();
+        // Cek apakah tanggal ini libur untuk agent tsb
+        const onHoliday = isHoliday(holidays, data.room_id, data.date);
+        const needApproval = onHoliday && currentUser?.role !== "admin";
+        const approvalStatus = needApproval ? "pending" : null;
+
         let gcalFields = { google_event_id: "", meet_link: "" };
-        if (gToken) {
+        // Buat GCal event hanya jika tidak perlu approval (langsung terkonfirmasi)
+        if (gToken && !needApproval) {
           try {
             gcalFields = await gcalCreateEvent(gToken, { ...data, id: newId }, rName);
           } catch (e) {
@@ -3091,11 +3228,15 @@ function App() {
           visit_type: data.visit_type || "Online", activity: data.activity || "",
           status_jadwal: data.status_jadwal || "",
           status_assignment: "Need Assign CRM",
+          approval_status: approvalStatus,
           ...gcalFields,
         });
-        setBookings(p=>[...p, inserted[0]||{...data,id:newId,...gcalFields}]);
+        const newBooking = inserted[0] || { ...data, id: newId, approval_status: approvalStatus, ...gcalFields };
+        setBookings(p=>[...p, newBooking]);
         notify("create", data);
-        if (gcalFields.meet_link) {
+        if (needApproval) {
+          addToast({ icon:"⏳", title:"Menunggu Persetujuan", message:"Booking di hari libur perlu disetujui admin sebelum dikonfirmasi.", color:"#f59e0b" });
+        } else if (gcalFields.meet_link) {
           addToast({ icon:"🎥", title:"Google Meet siap!", message:"Link meeting tersedia di detail booking.", color:"#10b981" });
         }
         // Email notifikasi booking dinonaktifkan
@@ -3121,6 +3262,46 @@ function App() {
       }
     } catch(e) {
       addToast({ icon:"❌", title:"Gagal menghapus", message:e.message, color:"#ef4444" });
+    }
+  };
+
+  // Approve atau Reject booking di hari libur
+  const handleApproval = async (id, action) => {
+    // action: "approved" | "rejected"
+    try {
+      const b = bookings.find(b => b.id === id);
+      const fields = { approval_status: action };
+      const r = await fetch(`${SUPA_URL}/rest/v1/bookings?id=eq.${id}`, {
+        method: "PATCH",
+        headers: { ...supa.headers, "Prefer": "return=representation" },
+        body: JSON.stringify(fields),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      setBookings(p => p.map(bk => bk.id === id ? { ...bk, ...fields } : bk));
+      setDetailBooking(p => p ? { ...p, ...fields } : p);
+
+      if (action === "approved") {
+        addToast({ icon:"✅", title:"Booking Disetujui", message:`${b?.title || "Booking"} telah dikonfirmasi.`, color:"#10b981" });
+        // Buat GCal event setelah approved
+        const gToken = getGoogleToken();
+        const room = ROOMS.find(r => r.id === b?.room_id);
+        if (gToken && b && !b.google_event_id) {
+          try {
+            const { google_event_id, meet_link } = await gcalCreateEvent(gToken, b, room?.name || "");
+            await fetch(`${SUPA_URL}/rest/v1/bookings?id=eq.${id}`, {
+              method: "PATCH",
+              headers: { ...supa.headers },
+              body: JSON.stringify({ google_event_id, meet_link }),
+            });
+            setBookings(p => p.map(bk => bk.id === id ? { ...bk, google_event_id, meet_link } : bk));
+            setDetailBooking(p => p ? { ...p, google_event_id, meet_link } : p);
+          } catch {}
+        }
+      } else {
+        addToast({ icon:"❌", title:"Booking Ditolak", message:`${b?.title || "Booking"} telah ditolak.`, color:"#ef4444" });
+      }
+    } catch(e) {
+      addToast({ icon:"❌", title:"Gagal update approval", message:e.message, color:"#ef4444" });
     }
   };
 
@@ -3213,6 +3394,23 @@ function App() {
           <div className="hidden md:flex items-center h-9 px-3 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-600 whitespace-nowrap">
             {todayCount} booking hari ini
           </div>
+
+          {/* Pending approval badge (admin only) */}
+          {currentUser?.role === "admin" && (() => {
+            const pendingCount = bookings.filter(b => b.approval_status === "pending").length;
+            return (
+              <button onClick={()=>setApprovalOpen(true)}
+                title={pendingCount > 0 ? `${pendingCount} booking menunggu persetujuan` : "Tidak ada booking pending"}
+                className={`relative w-9 h-9 flex items-center justify-center rounded-lg transition-colors ${pendingCount > 0 ? "text-amber-600 hover:bg-amber-50" : "text-slate-300 cursor-default"}`}>
+                <span aria-hidden="true">⏳</span>
+                {pendingCount > 0 && (
+                  <span className="absolute top-0.5 right-0.5 bg-amber-500 text-white text-[10px] rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center font-bold leading-none">
+                    {pendingCount > 9 ? "9+" : pendingCount}
+                  </span>
+                )}
+              </button>
+            );
+          })()}
 
           {/* Notifikasi */}
           <button onClick={()=>setNotifOpen(true)}
@@ -3376,10 +3574,12 @@ function App() {
       {detailBooking && (
         <DetailModal booking={detailBooking} room={ROOMS.find(r=>r.id===detailBooking.room_id)}
           onClose={()=>setDetailBooking(null)} onEdit={openEdit}
-          onDelete={handleDelete} onUpdateStatus={handleUpdateStatus} currentUser={currentUser}/>
+          onDelete={handleDelete} onUpdateStatus={handleUpdateStatus}
+          onApproval={handleApproval} currentUser={currentUser}/>
       )}
 
       {notifOpen && <NotifPanel logs={notifLogs} onClose={()=>setNotifOpen(false)} onMarkAllRead={markAllRead} onClearAll={clearAllNotifs}/>}
+      {approvalOpen && <ApprovalPanel bookings={bookings} onClose={()=>setApprovalOpen(false)} onSelect={b=>setDetailBooking(b)}/>}
       {exportOpen && <ExportModal onClose={()=>setExportOpen(false)} bookings={bookings}/>}
       {holidayOpen && <HolidayModal isOpen={holidayOpen} onClose={()=>setHolidayOpen(false)}
         holidays={holidays} onSave={loadHolidays} onDelete={loadHolidays} currentUser={currentUser}/>}
