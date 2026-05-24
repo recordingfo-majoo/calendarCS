@@ -2307,6 +2307,12 @@ function gcalEventBody(data, roomName, includeConference = false) {
   }
   return body;
 }
+// Training Offline tidak dibuat di Google Calendar
+function isTrainingOffline(data) {
+  return (data.visit_type || "Online") === "Offline" &&
+         (data.activity || "").toLowerCase().includes("training");
+}
+
 async function gcalCreateEvent(token, data, roomName) {
   const res = await fetch(
     "https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1",
@@ -3445,8 +3451,8 @@ function App() {
         });
         setBookings(p=>p.map(b=>b.id===data.id?(updated[0]||data):b));
         notify("update", data);
-        // Update event di Google Calendar jika ada
-        if (gToken && data.google_event_id) {
+        // Update event di Google Calendar jika ada & bukan Training Offline
+        if (gToken && data.google_event_id && !isTrainingOffline(data)) {
           try { await gcalUpdateEvent(gToken, data.google_event_id, data, rName); }
           catch (e) { addToast({ icon:"⚠️", title:"Google Calendar", message:"Booking disimpan, tapi gagal update di Google Calendar.", color:"#f59e0b" }); }
         }
@@ -3459,8 +3465,8 @@ function App() {
         const approvalStatus = needApproval ? "pending" : null;
 
         let gcalFields = { google_event_id: "", meet_link: "" };
-        // Buat GCal event hanya jika tidak perlu approval (langsung terkonfirmasi)
-        if (gToken && !needApproval) {
+        // Buat GCal event hanya jika tidak perlu approval & bukan Training Offline
+        if (gToken && !needApproval && !isTrainingOffline(data)) {
           try {
             gcalFields = await gcalCreateEvent(gToken, { ...data, id: newId }, rName);
           } catch (e) {
@@ -3529,10 +3535,10 @@ function App() {
 
       if (action === "approved") {
         addToast({ icon:"✅", title:"Booking Disetujui", message:`${b?.title || "Booking"} telah dikonfirmasi.`, color:"#10b981" });
-        // Buat GCal event setelah approved
+        // Buat GCal event setelah approved (kecuali Training Offline)
         const gToken = getGoogleToken();
         const room = ROOMS.find(r => r.id === b?.room_id);
-        if (gToken && b && !b.google_event_id) {
+        if (gToken && b && !b.google_event_id && !isTrainingOffline(b)) {
           try {
             const { google_event_id, meet_link } = await gcalCreateEvent(gToken, b, room?.name || "");
             await fetch(`${SUPA_URL}/rest/v1/bookings?id=eq.${id}`, {
