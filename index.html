@@ -2307,10 +2307,9 @@ function gcalEventBody(data, roomName, includeConference = false) {
   }
   return body;
 }
-// Training Offline tidak dibuat di Google Calendar
-function isTrainingOffline(data) {
-  return (data.visit_type || "Online") === "Offline" &&
-         (data.activity || "").toLowerCase().includes("training");
+// Booking Offline tidak dibuat di Google Calendar (tidak butuh Meet link)
+function isOfflineVisit(data) {
+  return (data.visit_type || "Online") === "Offline";
 }
 
 async function gcalCreateEvent(token, data, roomName) {
@@ -3452,7 +3451,7 @@ function App() {
         setBookings(p=>p.map(b=>b.id===data.id?(updated[0]||data):b));
         notify("update", data);
         // Update event di Google Calendar jika ada & bukan Training Offline
-        if (gToken && data.google_event_id && !isTrainingOffline(data)) {
+        if (gToken && data.google_event_id && !isOfflineVisit(data)) {
           try { await gcalUpdateEvent(gToken, data.google_event_id, data, rName); }
           catch (e) { addToast({ icon:"⚠️", title:"Google Calendar", message:"Booking disimpan, tapi gagal update di Google Calendar.", color:"#f59e0b" }); }
         }
@@ -3466,7 +3465,7 @@ function App() {
 
         let gcalFields = { google_event_id: "", meet_link: "" };
         // Buat GCal event hanya jika tidak perlu approval & bukan Training Offline
-        if (gToken && !needApproval && !isTrainingOffline(data)) {
+        if (gToken && !needApproval && !isOfflineVisit(data)) {
           try {
             gcalFields = await gcalCreateEvent(gToken, { ...data, id: newId }, rName);
           } catch (e) {
@@ -3538,7 +3537,7 @@ function App() {
         // Buat GCal event setelah approved (kecuali Training Offline)
         const gToken = getGoogleToken();
         const room = ROOMS.find(r => r.id === b?.room_id);
-        if (gToken && b && !b.google_event_id && !isTrainingOffline(b)) {
+        if (gToken && b && !b.google_event_id && !isOfflineVisit(b)) {
           try {
             const { google_event_id, meet_link } = await gcalCreateEvent(gToken, b, room?.name || "");
             await fetch(`${SUPA_URL}/rest/v1/bookings?id=eq.${id}`, {
