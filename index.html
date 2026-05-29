@@ -1813,6 +1813,9 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
   const isOwner = booking.booked_by_email === currentUser?.email;
   const canAct  = isOwner || currentUser?.role === "admin";
   const isAdmin = currentUser?.role === "admin";
+  // CS dapat set outcome (Reschedule/Cancel) pada booking di room mereka sendiri, meski bukan owner
+  const isMyRoom = currentUser?.role === "cs" && CS_AGENT_MAP[currentUser?.email] === booking.room_id;
+  const canSetOutcome = canAct || isMyRoom;
 
   const jadwalCfg  = STATUS_JADWAL_CFG[booking.status_jadwal];
   const assignCfg  = STATUS_ASSIGN_CFG[booking.status_assignment];
@@ -1955,8 +1958,8 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
           </div>
         )}
 
-        {/* Reschedule / Batal outcome — visible to owner + admin */}
-        {canAct && booking.approval_status !== "rejected" && (
+        {/* Reschedule / Batal outcome — visible to owner + admin + CS di room sendiri */}
+        {canSetOutcome && booking.approval_status !== "rejected" && (
           <div className="mx-6 mb-4 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
             <div className="text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wider">Update Hasil Kunjungan</div>
             <div className="flex gap-2">
@@ -1981,9 +1984,14 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
           </div>
         )}
 
-        {!canAct && (
+        {!canAct && !isMyRoom && (
           <div className="mx-6 mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800">
             Booking ini milik <strong>{booking.booked_by_name||"karyawan lain"}</strong>. Hanya pemilik atau Admin yang dapat mengubahnya.
+          </div>
+        )}
+        {!canAct && isMyRoom && (
+          <div className="mx-6 mb-4 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-800">
+            Booking ini dibuat oleh Admin. Kamu dapat mengubah status Reschedule/Cancel, namun tidak dapat mengedit detail atau menghapusnya.
           </div>
         )}
         <div className="px-6 pb-5 flex gap-2">
@@ -3445,11 +3453,15 @@ function App() {
         // Cek overlap waktu dengan booking lain (kecuali diri sendiri)
         const hasOverlapUpdate = !!findConflict(bookings, data);
         const needsApprovalUpdate = hasOverlapUpdate && currentUser?.role !== "admin";
+        // Pertahankan creator asli saat admin mengedit — agar CS tetap bisa edit bookingnya sendiri
+        const originalBooking = bookings.find(b => b.id === data.id);
+        const keepCreator = currentUser?.role === "admin" && originalBooking?.booked_by_email;
         const updated = await supa.update("bookings", data.id, {
           room_id: data.room_id, sch_code: data.sch_code || "", title: data.title, date: data.date,
           start_time: data.start_time, end_time: data.end_time,
           attendees: data.attendees, notes: data.notes,
-          booked_by_name: data.booked_by_name, booked_by_email: data.booked_by_email,
+          booked_by_name: keepCreator ? originalBooking.booked_by_name : data.booked_by_name,
+          booked_by_email: keepCreator ? originalBooking.booked_by_email : data.booked_by_email,
           visit_type: data.visit_type || "Online", activity: data.activity || "",
           status_jadwal: data.status_jadwal || "",
           status_assignment: data.status_assignment || "Need Assign CRM",
