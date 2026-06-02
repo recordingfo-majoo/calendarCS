@@ -468,15 +468,20 @@ function LoginGate({ onLogin }) {
     e.preventDefault();
     setError("");
     const em = email.trim().toLowerCase();
-    if (!em.endsWith(VIEWER_DOMAIN)) {
-      setError(`Akses ditolak. Halaman ini hanya untuk email ${VIEWER_DOMAIN}.`);
-      return;
-    }
     setLoading(true);
     try {
       const users = await supa.get("users", { email: `eq.${em}`, select: "*" });
       const user  = users.find(u => u.password_hash === password || u.password_hash === btoa(password));
       if (!user) { setError("Email atau password salah."); setLoading(false); return; }
+      // Aturan akses login: email @majoo.id selalu boleh.
+      // Pengecualian: akun dengan role "cs" tetap boleh login meskipun bukan @majoo.id
+      // (mis. agent CS yang memakai @majoo.com / @gmail.com).
+      // Aturan signup/daftar tidak berubah — pendaftaran baru tetap wajib @majoo.id.
+      if (!em.endsWith(VIEWER_DOMAIN) && user.role !== "cs") {
+        setError(`Akses ditolak. Halaman ini hanya untuk email ${VIEWER_DOMAIN} atau akun CS Agent.`);
+        setLoading(false);
+        return;
+      }
       const { password_hash, ...safe } = user;
       saveViewerSession(safe);
       onLogin(safe);
