@@ -523,6 +523,12 @@ function LoginScreen({ onLogin }) {
       const users = await supa.get("users", { email: `eq.${email}`, select: "*" });
       const user = users.find(u => u.password_hash === password || u.password_hash === btoa(password));
       if (!user) { setError("Email atau password salah."); setLoading(false); return; }
+      // Role "viewer" (akun yang didaftarkan dari view.html) dibatasi — hanya boleh view, tidak boleh booking.
+      if (user.role === "viewer") {
+        setError("Akun ini hanya untuk halaman view (read-only) dan tidak dapat mengakses kalender. Silakan buka halaman view.");
+        setLoading(false);
+        return;
+      }
       const { password_hash, ...safe } = user;
       onLogin(safe);
     } catch(err) { setError("Gagal login: " + err.message); }
@@ -559,7 +565,7 @@ function LoginScreen({ onLogin }) {
       const initials = name.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
       const role = ADMIN_EMAILS.includes(email) ? "admin"
                : CS_EMAILS.includes(email)     ? "cs"
-               : "user";
+               : "viewer";
       await supa.insert("users", { id: "u-"+Date.now(), name, email, role, password_hash: password });
       setSuccess("Akun berhasil dibuat! Silakan masuk.");
       setEmail(""); setPassword(""); setConfirm(""); setName(""); setOtp("");
@@ -648,10 +654,6 @@ function LoginScreen({ onLogin }) {
           {/* ── TAB: LOGIN ── */}
           {screen === "login" && (
             <div className="fade-in">
-              <div className="flex gap-1 bg-slate-100 rounded-xl p-1 mb-6">
-                <button className="flex-1 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white shadow-sm">Masuk</button>
-                <button onClick={()=>go("register")} className="flex-1 py-2 text-sm font-semibold rounded-lg text-slate-500 hover:text-slate-700 transition-colors">Daftar</button>
-              </div>
               <form onSubmit={handleLogin} className="space-y-4">
                 <Field label="Email" type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="email@majoo.id"/>
                 <Field label="Password" type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••"/>
@@ -664,6 +666,11 @@ function LoginScreen({ onLogin }) {
                   <button type="button" onClick={()=>go("forgot")} className="text-xs text-blue-500 hover:underline">Lupa password?</button>
                 </div>
               </form>
+              {/* Pendaftaran dipindah ke halaman view.html untuk membatasi akses daftar */}
+              <div className="mt-5 pt-5 border-t border-slate-100 text-center text-xs text-slate-500">
+                Belum punya akun?{" "}
+                <a href="view.html" className="text-blue-500 hover:underline font-medium">Daftar di halaman view</a>
+              </div>
             </div>
           )}
 

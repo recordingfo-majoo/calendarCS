@@ -9,6 +9,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
   <style>
     body { font-family: 'Inter', 'Segoe UI', sans-serif; }
     .booking-chip { font-size: 11px; line-height: 1.3; }
@@ -36,8 +37,48 @@ const supa = {
     const r = await fetch(`${SUPA_URL}/rest/v1/${table}${q}`, { headers: this.headers });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
+  },
+  async insert(table, body) {
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: { ...this.headers, "Content-Type": "application/json", Prefer: "return=representation" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
   }
 };
+
+// ─── EMAILJS CONFIG (sama dengan aplikasi utama, dipakai untuk OTP daftar) ────
+const EJS_SERVICE = "service_4p9uk8r";
+const EJS_OTP_TPL = "template_s4ij3ko";
+const EJS_FROM    = "recordingfo@majoo.id";
+const EJS_PUBLIC  = "ywihzNNLC8bD8iftb";
+window.addEventListener("DOMContentLoaded", () => {
+  if (window.emailjs) emailjs.init({ publicKey: EJS_PUBLIC });
+});
+
+// ─── OTP HELPERS ──────────────────────────────────────────────────────────────
+const _otpStore = {};
+function generateOTP() { return String(Math.floor(100000 + Math.random() * 900000)); }
+function storeOTP(email, code) { _otpStore[email] = { code, exp: Date.now() + 5*60*1000 }; }
+function verifyOTP(email, code) {
+  const rec = _otpStore[email];
+  if (!rec) return "not_found";
+  if (Date.now() > rec.exp) { delete _otpStore[email]; return "expired"; }
+  if (rec.code !== code) return "wrong";
+  delete _otpStore[email];
+  return "ok";
+}
+async function sendOTPEmail(toName, toEmail, otpCode) {
+  await emailjs.send(EJS_SERVICE, EJS_OTP_TPL, {
+    from_email: EJS_FROM,
+    to_name:    toName,
+    to_email:   toEmail,
+    passcode:   otpCode,
+    otp_code:   otpCode,
+  });
+}
 </script>
 
 <script type="text/babel">
@@ -349,8 +390,281 @@ function AgentFilter({ rooms, selectedIds, onToggle, onSelectAll, onClearAll }) 
   );
 }
 
+// ─── ACCESS GATE ──────────────────────────────────────────────────────────────
+// Halaman ini terbatas: hanya akun terdaftar dengan email @majoo.id yang boleh masuk.
+// Daftar baru juga hanya dibuka di sini (dengan OTP email), bukan di aplikasi utama.
+const VIEWER_DOMAIN      = "@majoo.id";
+const VIEWER_SESSION_KEY = "view_viewer_session";
+
+// Mapping role saat daftar — konsisten dengan aplikasi utama
+const ADMIN_EMAILS = [
+  "zulfikar.dwi@majoo.id",
+  "firjayanti@majoo.id",
+  "aan.sayudi@majoo.id",
+  "rofby.hidayadi@majoo.id",
+  "jhovan@majoo.id",
+  "ridho.valentin@majoo.id",
+  "faisal.nugroho@majoo.id",
+  "faisal@majoo.id",
+  "andi@majoo.id",
+];
+const CS_AGENT_MAP = {
+  "chusnul.adib@majoo.com":        1,
+  "fahmi.rasyied7574@majoo.com":   2,
+  "loudy.majoo@gmail.com":         3,
+  "sidikpermana@majoo.com":        4,
+  "suro@majoo.id":                 5,
+  "ferbi.ramadhan9042@majoo.com":  22,
+  "muhammad.subagya@majoo.com":    6,
+  "leo.the7042@majoo.com":         7,
+  "taufiq.hadiyanto@majoo.id":     9,
+  "ricky.widiarto7501@majoo.com":  10,
+  "salman.robby7572@majoo.com":    11,
+  "agus.hariyadi7987@majoo.com":   12,
+  "kadek.sedana8129@majoo.com":    13,
+  "dhafa.jusanto8590@majoo.com":   14,
+  "aldy.wahyudi@majoo.com":        15,
+  "andika01.majoo@gmail.com":      16,
+  "deni.setiawan8819@majoo.com":   17,
+  "efri.hidayat@majoo.com":        18,
+  "m.azlansyah@majoo.com":         19,
+  "onel.ramadani8827@majoo.com":   20,
+  "rahmat.hidayat@majoo.com":      21,
+  "rahmat.hidayat@majoo.id":       21,
+};
+const CS_EMAILS = Object.keys(CS_AGENT_MAP);
+
+function loadViewerSession() {
+  try { const s = localStorage.getItem(VIEWER_SESSION_KEY); return s ? JSON.parse(s) : null; }
+  catch { return null; }
+}
+function saveViewerSession(u) {
+  if (u) localStorage.setItem(VIEWER_SESSION_KEY, JSON.stringify(u));
+  else   localStorage.removeItem(VIEWER_SESSION_KEY);
+}
+
+function LoginGate({ onLogin }) {
+  const [screen,   setScreen]   = useState("login");   // login | register | register_otp
+  const [name,     setName]     = useState("");
+  const [email,    setEmail]    = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm,  setConfirm]  = useState("");
+  const [otp,      setOtp]      = useState("");
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState("");
+  const [success,  setSuccess]  = useState("");
+  const [resendCD, setResendCD] = useState(0);
+
+  useEffect(() => {
+    if (resendCD <= 0) return;
+    const t = setTimeout(() => setResendCD(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCD]);
+
+  const go = s => { setScreen(s); setError(""); setSuccess(""); setOtp(""); };
+
+  // ── LOGIN ──
+  const handleLogin = async e => {
+    e.preventDefault();
+    setError("");
+    const em = email.trim().toLowerCase();
+    if (!em.endsWith(VIEWER_DOMAIN)) {
+      setError(`Akses ditolak. Halaman ini hanya untuk email ${VIEWER_DOMAIN}.`);
+      return;
+    }
+    setLoading(true);
+    try {
+      const users = await supa.get("users", { email: `eq.${em}`, select: "*" });
+      const user  = users.find(u => u.password_hash === password || u.password_hash === btoa(password));
+      if (!user) { setError("Email atau password salah."); setLoading(false); return; }
+      const { password_hash, ...safe } = user;
+      saveViewerSession(safe);
+      onLogin(safe);
+    } catch(err) { setError("Gagal login: " + err.message); }
+    setLoading(false);
+  };
+
+  // ── DAFTAR step 1: kirim OTP ──
+  const handleRegisterRequest = async e => {
+    e.preventDefault();
+    if (loading) return;
+    setError("");
+    const em = email.trim().toLowerCase();
+    if (!em.endsWith(VIEWER_DOMAIN)) { setError(`Pendaftaran hanya untuk email ${VIEWER_DOMAIN}.`); return; }
+    setLoading(true);
+    try {
+      if (!name.trim())            { setError("Nama wajib diisi.");                       setLoading(false); return; }
+      if (password.length < 6)     { setError("Password minimal 6 karakter.");            setLoading(false); return; }
+      if (password !== confirm)    { setError("Konfirmasi password tidak cocok.");        setLoading(false); return; }
+      const existing = await supa.get("users", { email: `eq.${em}` });
+      if (existing.length > 0)     { setError("Email sudah terdaftar. Silakan login.");   setLoading(false); return; }
+      const code = generateOTP();
+      storeOTP(em, code);
+      await sendOTPEmail(name, em, code);
+      setResendCD(60);
+      go("register_otp");
+      setSuccess(`Kode OTP dikirim ke ${em}. Berlaku 5 menit.`);
+    } catch(err) { setError("Gagal mengirim OTP: " + (err?.message || err?.text || JSON.stringify(err))); }
+    setLoading(false);
+  };
+
+  // ── DAFTAR step 2: verifikasi OTP & buat akun ──
+  const handleVerifyRegister = async e => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      const em = email.trim().toLowerCase();
+      const result = verifyOTP(em, otp.trim());
+      if (result === "expired") { setError("Kode OTP sudah kadaluarsa. Kirim ulang."); setLoading(false); return; }
+      if (result !== "ok")      { setError("Kode OTP salah. Periksa kembali.");        setLoading(false); return; }
+      // Pendaftaran dari view.html: non-admin & non-CS otomatis role "viewer"
+      // (view-only — tidak bisa login ke aplikasi utama / booking).
+      const role = ADMIN_EMAILS.includes(em) ? "admin"
+                : CS_EMAILS.includes(em)     ? "cs"
+                : "viewer";
+      await supa.insert("users", { id: "u-"+Date.now(), name, email: em, role, password_hash: password });
+      setSuccess("Akun berhasil dibuat! Silakan masuk.");
+      setPassword(""); setConfirm(""); setName(""); setOtp("");
+      setTimeout(() => go("login"), 1500);
+    } catch(err) { setError("Gagal membuat akun: " + err.message); }
+    setLoading(false);
+  };
+
+  // ── KIRIM ULANG OTP ──
+  const handleResend = async () => {
+    if (resendCD > 0) return;
+    setError(""); setLoading(true);
+    try {
+      const em = email.trim().toLowerCase();
+      const code = generateOTP();
+      storeOTP(em, code);
+      await sendOTPEmail(name || em, em, code);
+      setResendCD(60);
+      setSuccess("Kode OTP baru sudah dikirim.");
+    } catch(err) { setError("Gagal mengirim ulang: " + (err?.message || err?.text || JSON.stringify(err))); }
+    setLoading(false);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-5">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-slate-200 p-7">
+        <div className="flex items-center justify-center mb-4">
+          <MajooLogo width={100} height={30}/>
+        </div>
+        <h1 className="text-lg font-bold text-slate-800 text-center mb-1">CS Workload Calendar</h1>
+        <p className="text-xs text-slate-500 text-center mb-6">Halaman terbatas — khusus email <span className="font-semibold">@majoo.id</span></p>
+
+        {(screen === "login" || screen === "register") && (
+          <div className="flex gap-1 bg-slate-100 rounded-xl p-1 mb-6">
+            <button onClick={()=>go("login")}
+              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${screen==="login"?"bg-blue-600 text-white shadow-sm":"text-slate-500 hover:text-slate-700"}`}>Masuk</button>
+            <button onClick={()=>go("register")}
+              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${screen==="register"?"bg-blue-600 text-white shadow-sm":"text-slate-500 hover:text-slate-700"}`}>Daftar</button>
+          </div>
+        )}
+
+        {screen === "login" && (
+          <form onSubmit={handleLogin} className="space-y-4 fade-in">
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Email</label>
+              <input type="email" required autoFocus value={email} onChange={e=>setEmail(e.target.value)}
+                placeholder="nama@majoo.id"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Password</label>
+              <input type="password" required value={password} onChange={e=>setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+            </div>
+            {error   && <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>}
+            {success && <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-700">{success}</div>}
+            <button type="submit" disabled={loading}
+              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm disabled:opacity-60 transition-colors">
+              {loading ? "Memverifikasi..." : "Masuk"}
+            </button>
+          </form>
+        )}
+
+        {screen === "register" && (
+          <form onSubmit={handleRegisterRequest} className="space-y-4 fade-in">
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Nama Lengkap</label>
+              <input type="text" required autoFocus value={name} onChange={e=>setName(e.target.value)}
+                placeholder="Nama Anda"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Email</label>
+              <input type="email" required value={email} onChange={e=>setEmail(e.target.value)}
+                placeholder="nama@majoo.id"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Password</label>
+              <input type="password" required value={password} onChange={e=>setPassword(e.target.value)}
+                placeholder="Min. 6 karakter"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Konfirmasi Password</label>
+              <input type="password" required value={confirm} onChange={e=>setConfirm(e.target.value)}
+                placeholder="Ulangi password"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+            </div>
+            {error && <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>}
+            <button type="submit" disabled={loading}
+              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm disabled:opacity-60 transition-colors">
+              {loading ? "Mengirim OTP..." : "Daftar — Kirim OTP"}
+            </button>
+          </form>
+        )}
+
+        {screen === "register_otp" && (
+          <form onSubmit={handleVerifyRegister} className="space-y-5 fade-in">
+            <div className="text-center">
+              <div className="text-4xl mb-3">📨</div>
+              <p className="text-sm text-slate-600">Masukkan 6-digit kode yang dikirim ke</p>
+              <p className="font-semibold text-slate-800 text-sm">{email}</p>
+            </div>
+            <input type="text" inputMode="numeric" maxLength={6} value={otp}
+              onChange={e=>setOtp(e.target.value.replace(/\D/g,""))}
+              autoFocus placeholder="000000"
+              className="w-full border-2 border-slate-200 rounded-xl px-4 py-3 text-center text-lg tracking-widest focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"/>
+            {success && <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-700">{success}</div>}
+            {error   && <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>}
+            <button type="submit" disabled={loading || otp.length < 6}
+              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm disabled:opacity-60 transition-colors">
+              {loading ? "Memverifikasi..." : "Verifikasi & Daftar →"}
+            </button>
+            <div className="text-center text-xs text-slate-500">
+              Tidak menerima kode?{" "}
+              {resendCD > 0
+                ? <span className="text-slate-400">Kirim ulang dalam {resendCD}s</span>
+                : <button type="button" onClick={handleResend} className="text-blue-500 hover:underline font-medium">Kirim Ulang</button>
+              }
+            </div>
+            <button type="button" onClick={()=>go("register")} className="w-full text-slate-400 hover:text-slate-600 text-xs transition-colors">← Kembali</button>
+          </form>
+        )}
+
+        <p className="text-[11px] text-slate-400 text-center mt-5 leading-relaxed">
+          Akses hanya untuk karyawan Majoo dengan email <span className="font-semibold">@majoo.id</span>.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── APP ──────────────────────────────────────────────────────────────────────
 function App() {
+  const [viewer, setViewer] = useState(() => loadViewerSession());
+  const logout = () => { saveViewerSession(null); setViewer(null); };
+  if (!viewer) return <LoginGate onLogin={setViewer}/>;
+  return <CalendarView viewer={viewer} onLogout={logout}/>;
+}
+
+function CalendarView({ viewer, onLogout }) {
   const [bookings,        setBookings]        = useState([]);
   const [holidays,        setHolidays]        = useState([]);
   const [loading,         setLoading]         = useState(true);
@@ -444,6 +758,21 @@ function App() {
           </svg>
           Refresh
         </button>
+
+        {/* Akun viewer + keluar */}
+        <div className="flex items-stretch h-8 bg-slate-50 border border-slate-200 rounded-lg overflow-hidden">
+          <div className="flex items-center gap-2 px-2.5" title={viewer?.email}>
+            <div aria-hidden="true" className="w-6 h-6 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">
+              {(viewer?.name||"?").split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2)}
+            </div>
+            <span className="hidden sm:block text-xs font-semibold text-slate-700 max-w-[120px] truncate">{viewer?.name||viewer?.email}</span>
+          </div>
+          <div aria-hidden="true" className="w-px bg-slate-200"/>
+          <button onClick={onLogout} aria-label="Keluar"
+            className="px-3 text-xs font-medium text-red-500 hover:bg-red-50 hover:text-red-600 transition-colors">
+            Keluar
+          </button>
+        </div>
       </header>
 
       {/* ── Area Tabs ── */}
