@@ -684,11 +684,18 @@ function CalendarView({ viewer, onLogout }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [bks, hols] = await Promise.all([
-        supa.get("bookings", { select: "*", order: "date.asc" }),
+      // Batasi rentang -12 sampai +12 bulan dari hari ini agar hemat egress Supabase.
+      const now = new Date();
+      const fromDt = new Date(now.getFullYear(), now.getMonth() - 12, 1);
+      const toDt   = new Date(now.getFullYear(), now.getMonth() + 13, 0);
+      const fromStr = localDateStr(fromDt);
+      const toStr   = localDateStr(toDt);
+      const bookingsUrl = `${SUPA_URL}/rest/v1/bookings?select=*&order=date.asc&and=(date.gte.${fromStr},date.lte.${toStr})`;
+      const [bksRes, hols] = await Promise.all([
+        fetch(bookingsUrl, { headers: supa.headers }).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); }),
         supa.get("holidays", { select: "*" }),
       ]);
-      setBookings(bks || []);
+      setBookings(bksRes || []);
       setHolidays(hols || []);
       setLastRefresh(new Date());
     } catch(e) {

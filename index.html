@@ -3286,11 +3286,22 @@ function App() {
 
   const weekDays = useMemo(()=>getWeekDays(baseDate),[baseDate]);
 
-  // Load semua bookings dari Supabase
+  // Load bookings dari Supabase — dibatasi rentang -12 sampai +12 bulan dari hari ini.
+  // Mengurangi egress secara drastis dibanding tarik seluruh tabel tiap polling
+  // (penting untuk plan Supabase Free yang punya batas 5 GB egress/bulan).
   const loadBookings = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await supa.get("bookings", { select: "*", order: "date.asc,start_time.asc" });
+      const now = new Date();
+      const fromDt = new Date(now.getFullYear(), now.getMonth() - 12, 1);
+      const toDt   = new Date(now.getFullYear(), now.getMonth() + 13, 0); // akhir bulan +12
+      const fromStr = localDateStr(fromDt);
+      const toStr   = localDateStr(toDt);
+      // Gabung dua filter date pakai PostgREST and=(...)
+      const url = `${SUPA_URL}/rest/v1/bookings?select=*&order=date.asc,start_time.asc&and=(date.gte.${fromStr},date.lte.${toStr})`;
+      const r = await fetch(url, { headers: supa.headers });
+      if (!r.ok) throw new Error(await r.text());
+      const data = await r.json();
       setBookings(data);
     } catch(e) {
       addToast({ icon:"❌", title:"Gagal memuat data", message:e.message, color:"#ef4444" });
@@ -3369,10 +3380,11 @@ function App() {
     return () => clearInterval(iv);
   }, [currentUser]);
 
-  // Realtime — poll setiap 30 detik sebagai fallback
+  // Realtime — polling jadi 3 menit untuk hemat egress Supabase.
+  // User tetap bisa pakai tombol Refresh di header untuk paksa muat ulang segera.
   useEffect(()=>{
     if (!currentUser) return;
-    const interval = setInterval(loadBookings, 30000);
+    const interval = setInterval(loadBookings, 180000);
     return () => clearInterval(interval);
   },[currentUser]);
 
