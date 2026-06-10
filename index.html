@@ -3297,8 +3297,9 @@ function App() {
       const toDt   = new Date(now.getFullYear(), now.getMonth() + 13, 0); // akhir bulan +12
       const fromStr = localDateStr(fromDt);
       const toStr   = localDateStr(toDt);
-      // Gabung dua filter date pakai PostgREST and=(...)
-      const url = `${SUPA_URL}/rest/v1/bookings?select=*&order=date.asc,start_time.asc&and=(date.gte.${fromStr},date.lte.${toStr})`;
+      // Filter date pakai dua parameter terpisah (PostgREST treat sbg implicit AND).
+      // Lebih aman daripada syntax and=(...) yang sebelumnya bermasalah di URL parsing.
+      const url = `${SUPA_URL}/rest/v1/bookings?select=*&order=date.asc,start_time.asc&date=gte.${fromStr}&date=lte.${toStr}`;
       const r = await fetch(url, { headers: supa.headers });
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
