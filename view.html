@@ -690,9 +690,25 @@ function CalendarView({ viewer, onLogout }) {
       const toDt   = new Date(now.getFullYear(), now.getMonth() + 13, 0);
       const fromStr = localDateStr(fromDt);
       const toStr   = localDateStr(toDt);
+      // Pagination wajib (PostgREST default cap 1000 baris/request)
       const bookingsUrl = `${SUPA_URL}/rest/v1/bookings?select=*&order=date.asc&date=gte.${fromStr}&date=lte.${toStr}`;
+      const fetchAllBookings = async () => {
+        const PAGE = 1000;
+        let all = [], from = 0;
+        for (let page = 0; page < 30; page++) {
+          const r = await fetch(bookingsUrl, {
+            headers: { ...supa.headers, Range: `${from}-${from + PAGE - 1}`, "Range-Unit": "items" }
+          });
+          if (!r.ok) throw new Error(r.statusText);
+          const chunk = await r.json();
+          all = all.concat(chunk);
+          if (chunk.length < PAGE) break;
+          from += PAGE;
+        }
+        return all;
+      };
       const [bksRes, hols] = await Promise.all([
-        fetch(bookingsUrl, { headers: supa.headers }).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); }),
+        fetchAllBookings(),
         supa.get("holidays", { select: "*" }),
       ]);
       setBookings(bksRes || []);
