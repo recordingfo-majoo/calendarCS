@@ -3292,25 +3292,24 @@ function App() {
 
   const weekDays = useMemo(()=>getWeekDays(baseDate),[baseDate]);
 
-  // Load bookings dari Supabase — dibatasi rentang -12 sampai +12 bulan dari hari ini.
-  // Mengurangi egress secara drastis dibanding tarik seluruh tabel tiap polling
-  // (penting untuk plan Supabase Free yang punya batas 5 GB egress/bulan).
-  const loadBookings = useCallback(async () => {
+  // Load bookings dari Supabase — dibatasi rentang ±3 bulan dari centerDate (default: hari ini).
+  // Saat user navigasi calendar ke minggu di luar range, effect di bawah akan auto-extend.
+  const [loadedRange, setLoadedRange] = useState({ from: null, to: null });
+  const loadBookings = useCallback(async (centerDate) => {
+    const center = centerDate instanceof Date ? centerDate : new Date();
     setLoading(true);
     try {
-      const now = new Date();
-      const fromDt = new Date(now.getFullYear(), now.getMonth() - 12, 1);
-      const toDt   = new Date(now.getFullYear(), now.getMonth() + 13, 0); // akhir bulan +12
+      const fromDt = new Date(center.getFullYear(), center.getMonth() - 3, 1);
+      const toDt   = new Date(center.getFullYear(), center.getMonth() + 4, 0);
       const fromStr = localDateStr(fromDt);
       const toStr   = localDateStr(toDt);
       // Filter date pakai dua parameter terpisah (PostgREST treat sbg implicit AND).
-      // Pagination wajib: PostgREST default cap 1000 baris/request. Tanpa pagination,
-      // booking di tanggal terjauh akan terpotong (penyebab "chip hilang" yang kita kejar).
+      // Pagination wajib: PostgREST default cap 1000 baris/request.
       const url = `${SUPA_URL}/rest/v1/bookings?select=*&order=date.asc,start_time.asc&date=gte.${fromStr}&date=lte.${toStr}`;
       const PAGE = 1000;
       let allRows = [];
       let from = 0;
-      for (let page = 0; page < 30; page++) {  // safety cap 30 pages = 30k rows
+      for (let page = 0; page < 10; page++) {
         const r = await fetch(url, {
           headers: { ...supa.headers, Range: `${from}-${from + PAGE - 1}`, "Range-Unit": "items" }
         });
@@ -3320,8 +3319,9 @@ function App() {
         if (chunk.length < PAGE) break;
         from += PAGE;
       }
-      console.log(`[loadBookings] ${allRows.length} rows (range ${fromStr}→${toStr}, ${Math.ceil(allRows.length/PAGE)} req)`);
+      console.log(`[loadBookings] ${allRows.length} rows (range ${fromStr}→${toStr})`);
       setBookings(allRows);
+      setLoadedRange({ from: fromStr, to: toStr });
     } catch(e) {
       addToast({ icon:"❌", title:"Gagal memuat data", message:e.message, color:"#ef4444" });
     }
@@ -3399,13 +3399,28 @@ function App() {
     return () => clearInterval(iv);
   }, [currentUser]);
 
-  // Realtime — polling jadi 3 menit untuk hemat egress Supabase.
-  // User tetap bisa pakai tombol Refresh di header untuk paksa muat ulang segera.
+  // Auto-refresh hemat egress: hanya saat tab/window kembali fokus.
+  // Polling periodik dihapus — dulu 30 detik/3 menit menghabiskan egress >2 GB/hari.
+  // User tetap punya tombol Refresh di header untuk paksa muat ulang segera.
   useEffect(()=>{
     if (!currentUser) return;
-    const interval = setInterval(loadBookings, 180000);
-    return () => clearInterval(interval);
-  },[currentUser]);
+    const refresh = () => { if (document.visibilityState === "visible") loadBookings(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  },[currentUser, loadBookings]);
+
+  // Auto-extend: kalau user navigasi calendar ke minggu di luar range yang termuat, refetch.
+  useEffect(()=>{
+    if (!currentUser || !loadedRange.from || !baseDate) return;
+    const baseStr = localDateStr(baseDate);
+    if (baseStr < loadedRange.from || baseStr > loadedRange.to) {
+      loadBookings(baseDate);
+    }
+  },[baseDate, loadedRange, currentUser, loadBookings]);
 
   const getGoogleToken = () => (googleToken && Date.now() < gcalExpiry) ? googleToken : null;
   const connectGoogleCal = () => {

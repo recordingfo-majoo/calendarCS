@@ -690,10 +690,10 @@ function CalendarView({ viewer, onLogout }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      // Batasi rentang -12 sampai +12 bulan dari hari ini agar hemat egress Supabase.
+      // Range hemat: ±3 bulan dari hari ini.
       const now = new Date();
-      const fromDt = new Date(now.getFullYear(), now.getMonth() - 12, 1);
-      const toDt   = new Date(now.getFullYear(), now.getMonth() + 13, 0);
+      const fromDt = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+      const toDt   = new Date(now.getFullYear(), now.getMonth() + 4, 0);
       const fromStr = localDateStr(fromDt);
       const toStr   = localDateStr(toDt);
       // Pagination wajib (PostgREST default cap 1000 baris/request)
