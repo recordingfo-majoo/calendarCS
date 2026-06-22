@@ -27,8 +27,8 @@
 
 <script>
 // ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
-const SUPA_URL = "https://bewqzhantucuhkwzehve.supabase.co";
-const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJld3F6aGFudHVjdWhrd3plaHZlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMDYxNDksImV4cCI6MjA5NjY4MjE0OX0.jaHf5HaK0VvTNJb519mAQsEBmjziyIULcQFRzx5h2J4";
+const SUPA_URL = "https://ioqqhfscacghcqqtxykl.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlvcXFoZnNjYWNnaGNxcXR4eWtsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMTAxNjcsImV4cCI6MjA5NzY4NjE2N30.WnjFo9Lc4IC6TiY-PeWGH8v1WqpEP5XqZp3oDtyFURE";
 
 const supa = {
   headers: { "apikey": SUPA_KEY, "Authorization": "Bearer " + SUPA_KEY },
@@ -50,7 +50,7 @@ const supa = {
 };
 
 // ─── BOOKINGS CACHE + DELTA-SYNC (hemat egress; key sama dgn index.html → cross-warm) ───
-const BOOKINGS_CACHE_KEY = "csc_bookings_cache_v1";
+const BOOKINGS_CACHE_KEY = "csc_bookings_cache_v2";  // v2: pindah project Supabase (ioqqhfsc...), reset cache lama
 function loadBookingsCache() { try { return JSON.parse(localStorage.getItem(BOOKINGS_CACHE_KEY) || "null"); } catch { return null; } }
 function saveBookingsCache(obj) { try { localStorage.setItem(BOOKINGS_CACHE_KEY, JSON.stringify({ ...obj, savedAt: Date.now() })); } catch {} }
 function maxUpdatedAt(rows) { let m=""; for (const r of rows){ if(r&&r.updated_at&&r.updated_at>m) m=r.updated_at; } return m; }
