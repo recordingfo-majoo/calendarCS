@@ -97,7 +97,7 @@ function saveSession(u) { try { if(u) localStorage.setItem("roombook_session_v2"
 // Strategi: render dari cache lokal dulu (instant), lalu hanya tarik baris yang
 // BERUBAH dari server via `updated_at=gt.{lastSync}`. Tidak lagi refetch ±3 bulan
 // penuh setiap tab fokus — itu yang dulu membakar egress puluhan GB/bulan.
-const BOOKINGS_CACHE_KEY = "csc_bookings_cache_v2";  // v2: pindah project Supabase (ioqqhfsc...), reset cache lama
+const BOOKINGS_CACHE_KEY = "csc_bookings_cache_v3";  // v3: fix cache beracun array kosong saat logout (reset paksa)
 function loadBookingsCache() {
   try { return JSON.parse(localStorage.getItem(BOOKINGS_CACHE_KEY) || "null"); } catch { return null; }
 }
@@ -3388,7 +3388,7 @@ function App() {
   useEffect(()=>{
     if (!currentUser) return;
     const cache = loadBookingsCache();
-    if (cache && cache.rows && cache.lastSync) {
+    if (cache && Array.isArray(cache.rows) && cache.rows.length > 0 && cache.lastSync) {
       setBookings(cache.rows);
       setLoadedRange({ from: cache.from, to: cache.to });
       lastSyncRef.current = cache.lastSync;
@@ -3496,8 +3496,12 @@ function App() {
   },[baseDate, loadedRange, currentUser, loadBookings]);
 
   // Jaga cache selalu cerminan state terkini (termasuk delete lokal) → reload tetap konsisten.
+  // PENTING: jangan pernah menimpa cache dgn array kosong (mis. transisi logout men-setBookings([]))
+  // — itu pernah "meracuni" cache sehingga SEMUA jadwal hilang di login berikutnya.
   useEffect(()=>{
-    if (loadedRange.from) saveBookingsCache({ rows: bookings, from: loadedRange.from, to: loadedRange.to, lastSync: lastSyncRef.current });
+    if (loadedRange.from && bookings.length > 0) {
+      saveBookingsCache({ rows: bookings, from: loadedRange.from, to: loadedRange.to, lastSync: lastSyncRef.current });
+    }
   },[bookings, loadedRange]);
 
   const getGoogleToken = () => (googleToken && Date.now() < gcalExpiry) ? googleToken : null;
@@ -3522,7 +3526,10 @@ function App() {
       setSelectedRooms(ROOMS.map(r => r.id));
     }
   };
-  const logout = () => { saveSession(null); setCurrentUser(null); setBookings([]); setNotifLogs([]); };
+  const logout = () => {
+    saveSession(null); setCurrentUser(null); setBookings([]); setNotifLogs([]);
+    setLoadedRange({ from: null, to: null }); lastSyncRef.current = ""; lastFullRef.current = 0;
+  };
   const updateUser = user => { saveSession(user); setCurrentUser(user); };
 
   const notify = (type, booking) => {
