@@ -93,6 +93,24 @@ function loadSession() {
 }
 function saveSession(u) { try { if(u) localStorage.setItem("roombook_session_v2", JSON.stringify(u)); else localStorage.removeItem("roombook_session_v2"); } catch {} }
 
+// ─── BOOKINGS CACHE + DELTA-SYNC (hemat egress) ─────────────────────────────────
+// Strategi: render dari cache lokal dulu (instant), lalu hanya tarik baris yang
+// BERUBAH dari server via `updated_at=gt.{lastSync}`. Tidak lagi refetch ±3 bulan
+// penuh setiap tab fokus — itu yang dulu membakar egress puluhan GB/bulan.
+const BOOKINGS_CACHE_KEY = "csc_bookings_cache_v1";
+function loadBookingsCache() {
+  try { return JSON.parse(localStorage.getItem(BOOKINGS_CACHE_KEY) || "null"); } catch { return null; }
+}
+function saveBookingsCache(obj) {
+  try { localStorage.setItem(BOOKINGS_CACHE_KEY, JSON.stringify({ ...obj, savedAt: Date.now() })); } catch {}
+}
+// Watermark delta = updated_at terbesar dari kumpulan baris (pakai jam SERVER → anti clock-skew).
+function maxUpdatedAt(rows) {
+  let m = "";
+  for (const r of rows) { if (r && r.updated_at && r.updated_at > m) m = r.updated_at; }
+  return m;
+}
+
 // ─── EMAILJS CONFIG ───────────────────────────────────────────────────────────
 const EJS_SERVICE      = "service_4p9uk8r";
 const EJS_OTP_TPL      = "template_s4ij3ko";   // template OTP registrasi
@@ -3276,6 +3294,9 @@ function App() {
   const tokenClientRef  = React.useRef(null);
   const currentUserRef  = React.useRef(null);  // selalu up-to-date untuk callback async
   const gcalManualRef   = React.useRef(false);  // true = connect manual (tampilkan toast)
+  const lastSyncRef     = React.useRef("");     // watermark delta-sync (updated_at terbesar yg sudah dilihat)
+  const lastFullRef     = React.useRef(0);      // timestamp full-load terakhir (untuk reconcile delete)
+  const baseDateRef     = React.useRef(null);   // baseDate terkini, supaya interval tak perlu re-subscribe
   const [baseDate,      setBaseDate]      = useState(new Date());
   const [modalOpen,     setModalOpen]     = useState(false);
   const [modalInit,     setModalInit]     = useState(null);
@@ -3322,10 +3343,38 @@ function App() {
       console.log(`[loadBookings] ${allRows.length} rows (range ${fromStr}→${toStr})`);
       setBookings(allRows);
       setLoadedRange({ from: fromStr, to: toStr });
+      // Baseline delta-sync + cache
+      lastSyncRef.current = maxUpdatedAt(allRows) || lastSyncRef.current;
+      lastFullRef.current = Date.now();
+      saveBookingsCache({ rows: allRows, from: fromStr, to: toStr, lastSync: lastSyncRef.current });
     } catch(e) {
       addToast({ icon:"❌", title:"Gagal memuat data", message:e.message, color:"#ef4444" });
     }
     setLoading(false);
+  }, []);
+
+  // Delta-sync: hanya tarik baris yang berubah sejak watermark (updated_at). Payload kecil.
+  // Tidak menangkap DELETE — itu ditangani reconcile full-load terthrottle (lihat effect di bawah).
+  const syncDelta = useCallback(async () => {
+    const since = lastSyncRef.current;
+    if (!since) return;  // belum ada baseline → biarkan full load yang menangani
+    try {
+      const url = `${SUPA_URL}/rest/v1/bookings?select=*&updated_at=gt.${encodeURIComponent(since)}&order=updated_at.asc`;
+      const r = await fetch(url, { headers: supa.headers });
+      if (!r.ok) throw new Error(await r.text());
+      const changed = await r.json();
+      if (!changed.length) return;
+      lastSyncRef.current = maxUpdatedAt(changed) || since;
+      setBookings(prev => {
+        const map = new Map(prev.map(b => [b.id, b]));
+        for (const row of changed) map.set(row.id, row);  // upsert by id
+        const merged = Array.from(map.values());
+        const c = loadBookingsCache() || {};
+        saveBookingsCache({ ...c, rows: merged, lastSync: lastSyncRef.current });
+        return merged;
+      });
+      console.log(`[syncDelta] ${changed.length} baris berubah`);
+    } catch(e) { console.warn("[syncDelta] gagal:", e.message); }
   }, []);
 
   const loadHolidays = useCallback(async () => {
@@ -3335,11 +3384,27 @@ function App() {
     } catch(e) { console.warn("Gagal load holidays:", e.message); }
   }, []);
 
-  // Auto-load saat login
-  useEffect(()=>{ if (currentUser) { loadBookings(); loadHolidays(); } },[currentUser]);
+  // Auto-load saat login — render cache dulu (instant + hemat egress), lalu sinkronkan.
+  useEffect(()=>{
+    if (!currentUser) return;
+    const cache = loadBookingsCache();
+    if (cache && cache.rows && cache.lastSync) {
+      setBookings(cache.rows);
+      setLoadedRange({ from: cache.from, to: cache.to });
+      lastSyncRef.current = cache.lastSync;
+      const stale = !cache.savedAt || (Date.now() - cache.savedAt) > 10 * 60 * 1000;
+      if (stale) { lastFullRef.current = 0; loadBookings(); }  // cache lama → full load (tangkap delete)
+      else { lastFullRef.current = Date.now(); syncDelta(); }  // cache segar → cukup delta
+    } else {
+      loadBookings();  // tak ada cache → full load sekali
+    }
+    loadHolidays();
+  },[currentUser]);
 
   // Sync currentUserRef agar selalu fresh di dalam callback async
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+  // Sync baseDateRef agar interval sync tak perlu re-subscribe tiap navigasi minggu
+  useEffect(() => { baseDateRef.current = baseDate; }, [baseDate]);
 
   // Init Google Identity Services (sekali saja)
   useEffect(() => {
@@ -3399,19 +3464,27 @@ function App() {
     return () => clearInterval(iv);
   }, [currentUser]);
 
-  // Auto-refresh hemat egress: hanya saat tab/window kembali fokus.
-  // Polling periodik dihapus — dulu 30 detik/3 menit menghabiskan egress >2 GB/hari.
-  // User tetap punya tombol Refresh di header untuk paksa muat ulang segera.
+  // Sinkronisasi hemat egress (delta-sync, BUKAN refetch penuh):
+  //  • Tab kembali fokus  → delta-sync; atau full reconcile bila >10 mnt sejak full-load (utk tangkap DELETE).
+  //  • Selama tab terlihat → delta-sync ringan tiap 60 detik (near-realtime untuk seluruh tim).
+  // Tombol Refresh di header tetap memaksa full load. Payload delta = hanya baris berubah (sangat kecil).
   useEffect(()=>{
     if (!currentUser) return;
-    const refresh = () => { if (document.visibilityState === "visible") loadBookings(); };
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
+    const RECONCILE_MS = 10 * 60 * 1000;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastFullRef.current > RECONCILE_MS) loadBookings(baseDateRef.current);
+      else syncDelta();
     };
-  },[currentUser, loadBookings]);
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    const iv = setInterval(() => { if (document.visibilityState === "visible") syncDelta(); }, 60 * 1000);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(iv);
+    };
+  },[currentUser, loadBookings, syncDelta]);
 
   // Auto-extend: kalau user navigasi calendar ke minggu di luar range yang termuat, refetch.
   useEffect(()=>{
@@ -3421,6 +3494,11 @@ function App() {
       loadBookings(baseDate);
     }
   },[baseDate, loadedRange, currentUser, loadBookings]);
+
+  // Jaga cache selalu cerminan state terkini (termasuk delete lokal) → reload tetap konsisten.
+  useEffect(()=>{
+    if (loadedRange.from) saveBookingsCache({ rows: bookings, from: loadedRange.from, to: loadedRange.to, lastSync: lastSyncRef.current });
+  },[bookings, loadedRange]);
 
   const getGoogleToken = () => (googleToken && Date.now() < gcalExpiry) ? googleToken : null;
   const connectGoogleCal = () => {
