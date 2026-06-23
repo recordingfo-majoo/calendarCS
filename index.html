@@ -212,7 +212,7 @@ const ROOMS = [
   { id: 7,  name: "Leo The",                          city: "Jakarta Barat",      area: "Jabodetabek",  colorHex: "#ec4899" },
   { id: 22, name: "Ferbi Ramadhan",                   city: "Tangerang Kota",     area: "Jabodetabek",  colorHex: "#6366f1" },
   { id: 23, name: "Raka Maulana Firdaus",             city: "Jakarta Utara",      area: "Jabodetabek",  colorHex: "#db2777" },
-  { id: 24, name: "Ridho Fadel Arliansyah",           city: "Jakarta Utara",      area: "Jabodetabek",  colorHex: "#2563eb" },
+  { id: 24, name: "Ridho Fadel Arliansyah",           city: "Bekasi",             area: "Jabodetabek",  colorHex: "#2563eb" },
   // Sumkalsulpap
   { id: 15, name: "Aldy Rhama Wahyudi",               city: "Jambi",           area: "Sumkalsulpap", colorHex: "#0ea5e9" },
   { id: 16, name: "Andika Syahputra",                 city: "Makassar",        area: "Sumkalsulpap", colorHex: "#d946ef" },
@@ -255,7 +255,7 @@ const CS_AGENT_MAP = {
   "suro@majoo.id":                 5,  // Suro Rahardi — Jakarta Selatan
   "ferbi.ramadhan9042@majoo.com":  22, // Ferbi Ramadhan — Tangerang Kota
   "maulraka9@gmail.com":           23, // Raka Maulana Firdaus — Jakarta Utara
-  "ridho.arliansyah9196@majoo.com":24, // Ridho Fadel Arliansyah — Jakarta Utara
+  "ridho.arliansyah9196@majoo.com":24, // Ridho Fadel Arliansyah — Bekasi
   "alim.kusuma9198@majoo.com":     26, // Alim Perdana Kusuma — Batam
   "muhammad.subagya@majoo.com":    6,  // Muhammad Wildannul Ihsan Subagya — Bogor
   "leo.the7042@majoo.com":         7,  // Leo The — Jakarta Barat
@@ -364,8 +364,8 @@ function getWeekDays(base) {
   mon.setDate(d.getDate()-(day===0?6:day-1));
   return Array.from({length:7},(_,i)=>{ const dd=new Date(mon); dd.setDate(mon.getDate()+i); return dd; });
 }
-// Slot jam kalender: 08:00 sampai 00:00 (tengah malam)
-const HOURS = Array.from({length:17},(_,i)=>`${String((i+8)%24).padStart(2,"0")}:00`);
+// Slot jam kalender: 07:00 sampai 00:00 (tengah malam)
+const HOURS = Array.from({length:18},(_,i)=>`${String((i+7)%24).padStart(2,"0")}:00`);
 
 // ─── TARGET WORKING HOURS ─────────────────────────────────────────────────────
 // HKE = Hari Kerja Efektif. target = jam kerja target per individu per bulan.
@@ -939,7 +939,7 @@ function RoomSidebar({ rooms, selectedRooms, onToggle, onSelectAll, onClearAll, 
 // ─── BOOKING CHIP ─────────────────────────────────────────────────────────────
 function BookingChip({ booking, room, currentUser, col, totalCols, onClick }) {
   const SLOT_H   = 56;
-  let start      = toMin(booking.start_time) - toMin("08:00");
+  let start      = toMin(booking.start_time) - toMin("07:00");
   if (start < 0) start += 24*60;   // jam dini hari (mis. 00:00) tampil di baris bawah, bukan negatif
   const duration = toMin(booking.end_time)   - toMin(booking.start_time);
   const top    = (start/60)*SLOT_H;
