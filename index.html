@@ -3295,8 +3295,10 @@ function App() {
   const currentUserRef  = React.useRef(null);  // selalu up-to-date untuk callback async
   const gcalManualRef   = React.useRef(false);  // true = connect manual (tampilkan toast)
   const lastSyncRef     = React.useRef("");     // watermark delta-sync (updated_at terbesar yg sudah dilihat)
-  const lastFullRef     = React.useRef(0);      // timestamp full-load terakhir (untuk reconcile delete)
+  const lastFullRef     = React.useRef(0);      // timestamp full-load terakhir
   const baseDateRef     = React.useRef(null);   // baseDate terkini, supaya interval tak perlu re-subscribe
+  const lastReconcileRef= React.useRef(0);      // timestamp cek-delete terakhir (deteksi booking dihapus)
+  const loadedRangeRef  = React.useRef({ from:null, to:null });  // rentang termuat terkini untuk callback stabil
   const [baseDate,      setBaseDate]      = useState(new Date());
   const [modalOpen,     setModalOpen]     = useState(false);
   const [modalInit,     setModalInit]     = useState(null);
@@ -3377,6 +3379,37 @@ function App() {
     } catch(e) { console.warn("[syncDelta] gagal:", e.message); }
   }, []);
 
+  // Deteksi DELETE secara murah: ambil HANYA kolom id dalam rentang termuat (≈16× lebih kecil
+  // dari full-load select=*), lalu buang baris lokal yang sudah tak ada di server. Update sendiri
+  // tetap ditangani delta-sync; ini khusus menangkap booking yang dihapus orang lain.
+  const reconcileDeletes = useCallback(async () => {
+    let { from, to } = loadedRangeRef.current;
+    if (!from || !to) { const c = loadBookingsCache() || {}; from = c.from; to = c.to; }  // fallback dari cache (mis. saat mount)
+    if (!from || !to) return;
+    try {
+      const ids = new Set();
+      const PAGE = 1000;
+      for (let start = 0; start < 20000; start += PAGE) {
+        const r = await fetch(`${SUPA_URL}/rest/v1/bookings?select=id&date=gte.${from}&date=lte.${to}`, {
+          headers: { ...supa.headers, Range: `${start}-${start + PAGE - 1}`, "Range-Unit": "items" }
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const chunk = await r.json();
+        for (const x of chunk) ids.add(x.id);
+        if (chunk.length < PAGE) break;
+      }
+      if (!ids.size) return;  // hasil kosong mencurigakan → jangan hapus apa-apa (aman)
+      setBookings(prev => {
+        const next = prev.filter(b => (b.date < from || b.date > to) ? true : ids.has(b.id));
+        if (next.length === prev.length) return prev;  // tak ada yg dihapus → hindari re-render
+        const c = loadBookingsCache() || {};
+        saveBookingsCache({ ...c, rows: next, lastSync: lastSyncRef.current });
+        console.log(`[reconcileDeletes] ${prev.length - next.length} booking dihapus disinkronkan`);
+        return next;
+      });
+    } catch(e) { console.warn("[reconcileDeletes] gagal:", e.message); }
+  }, []);
+
   const loadHolidays = useCallback(async () => {
     try {
       const data = await supa.get("holidays", { select: "*", order: "date.asc" });
@@ -3392,9 +3425,16 @@ function App() {
       setBookings(cache.rows);
       setLoadedRange({ from: cache.from, to: cache.to });
       lastSyncRef.current = cache.lastSync;
-      const stale = !cache.savedAt || (Date.now() - cache.savedAt) > 10 * 60 * 1000;
-      if (stale) { lastFullRef.current = 0; loadBookings(); }  // cache lama → full load (tangkap delete)
-      else { lastFullRef.current = Date.now(); syncDelta(); }  // cache segar → cukup delta
+      // Masa cache panjang (12 jam): konten tetap akurat via delta-sync (update) + reconcileDeletes (delete),
+      // jadi tak perlu full-load select=* tiap login/reload — ini penghemat egress terbesar.
+      const stale = !cache.savedAt || (Date.now() - cache.savedAt) > 12 * 60 * 60 * 1000;
+      if (stale) { lastFullRef.current = 0; loadBookings(); }  // cache sangat lama → full load sekali (self-heal)
+      else {                                                    // cache masih ok → cukup delta + cek-delete murah
+        lastFullRef.current = Date.now();
+        lastReconcileRef.current = Date.now();
+        syncDelta();
+        reconcileDeletes();
+      }
     } else {
       loadBookings();  // tak ada cache → full load sekali
     }
@@ -3405,6 +3445,8 @@ function App() {
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   // Sync baseDateRef agar interval sync tak perlu re-subscribe tiap navigasi minggu
   useEffect(() => { baseDateRef.current = baseDate; }, [baseDate]);
+  // Sync loadedRangeRef agar reconcileDeletes punya rentang terkini tanpa jadi dependency
+  useEffect(() => { loadedRangeRef.current = loadedRange; }, [loadedRange]);
 
   // Init Google Identity Services (sekali saja)
   useEffect(() => {
@@ -3464,27 +3506,31 @@ function App() {
     return () => clearInterval(iv);
   }, [currentUser]);
 
-  // Sinkronisasi hemat egress (delta-sync, BUKAN refetch penuh):
-  //  • Tab kembali fokus  → delta-sync; atau full reconcile bila >10 mnt sejak full-load (utk tangkap DELETE).
-  //  • Selama tab terlihat → delta-sync ringan tiap 60 detik (near-realtime untuk seluruh tim).
-  // Tombol Refresh di header tetap memaksa full load. Payload delta = hanya baris berubah (sangat kecil).
+  // Sinkronisasi hemat egress — TIDAK ADA full-load select=* berkala lagi:
+  //  • Selama tab terlihat → delta-sync (hanya baris berubah) tiap 60 detik.
+  //  • Cek-delete murah (select=id saja) tiap 10 menit / saat fokus → tangkap booking yg dihapus.
+  // Full-load select=* hanya saat: tak ada cache, tombol Refresh, atau navigasi ke luar rentang.
   useEffect(()=>{
     if (!currentUser) return;
     const RECONCILE_MS = 10 * 60 * 1000;
-    const onVisible = () => {
+    const lightSync = () => { if (document.visibilityState === "visible") syncDelta(); };
+    const deleteCheck = () => {
       if (document.visibilityState !== "visible") return;
-      if (Date.now() - lastFullRef.current > RECONCILE_MS) loadBookings(baseDateRef.current);
-      else syncDelta();
+      if (Date.now() - lastReconcileRef.current < RECONCILE_MS) return;
+      lastReconcileRef.current = Date.now();
+      reconcileDeletes();
     };
+    const onVisible = () => { lightSync(); deleteCheck(); };
     window.addEventListener("focus", onVisible);
     document.addEventListener("visibilitychange", onVisible);
-    const iv = setInterval(() => { if (document.visibilityState === "visible") syncDelta(); }, 60 * 1000);
+    const ivSync = setInterval(lightSync, 60 * 1000);
+    const ivDel  = setInterval(deleteCheck, RECONCILE_MS);
     return () => {
       window.removeEventListener("focus", onVisible);
       document.removeEventListener("visibilitychange", onVisible);
-      clearInterval(iv);
+      clearInterval(ivSync); clearInterval(ivDel);
     };
-  },[currentUser, loadBookings, syncDelta]);
+  },[currentUser, syncDelta, reconcileDeletes]);
 
   // Auto-extend: kalau user navigasi calendar ke minggu di luar range yang termuat, refetch.
   useEffect(()=>{
