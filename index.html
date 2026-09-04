@@ -360,6 +360,13 @@ function autoEndTime(startTime, durationHours) {
   return `${String(Math.min(endH, 23)).padStart(2,"0")}:${String(endM).padStart(2,"0")}`;
 }
 function fmtMonthYear(d) { return d.toLocaleDateString("id-ID",{month:"long",year:"numeric"}); }
+// Format timestamp ISO (UTC) -> tanggal + jam WIB, untuk Log Aktivitas booking
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString("id-ID", { day:"numeric", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit", timeZone:"Asia/Jakarta" }) + " WIB";
+}
 function getWeekDays(base) {
   const d = new Date(base), mon = new Date(d), day = d.getDay();
   mon.setDate(d.getDate()-(day===0?6:day-1));
@@ -1972,6 +1979,21 @@ function DetailModal({ booking, room, onClose, onEdit, onDelete, onUpdateStatus,
               </div>
             </div>
           ))}
+        </div>
+
+        {/* Log aktivitas: dibuat & perubahan terakhir */}
+        <div className="mx-6 mb-4 bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 space-y-1.5">
+          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Log Aktivitas</div>
+          <div className="flex items-start gap-2 text-xs text-slate-500">
+            <span>🆕</span>
+            <div>Dibuat oleh <span className="font-medium text-slate-700">{booking.booked_by_name || "—"}</span>{booking.created_at && <span className="text-slate-400"> · {fmtDateTime(booking.created_at)}</span>}</div>
+          </div>
+          {booking.updated_at && booking.created_at && Math.abs(new Date(booking.updated_at) - new Date(booking.created_at)) > 2000 && (
+            <div className="flex items-start gap-2 text-xs text-slate-500">
+              <span>✏️</span>
+              <div>Terakhir diubah{booking.last_edited_by && <span> oleh <span className="font-medium text-slate-700">{booking.last_edited_by}</span></span>}<span className="text-slate-400"> · {fmtDateTime(booking.updated_at)}</span></div>
+            </div>
+          )}
         </div>
 
         {/* Admin: quick toggle status assignment */}
@@ -3650,6 +3672,7 @@ function App() {
           visit_type: data.visit_type || "Online", activity: data.activity || "",
           status_jadwal: data.status_jadwal || "",
           status_assignment: data.status_assignment || "Need Assign CRM",
+          last_edited_by: currentUser?.name || "",
           ...(needsApprovalUpdate ? { approval_status: "pending" } : {}),
         });
         setBookings(p=>p.map(b=>b.id===data.id?(updated[0]||data):b));
@@ -3736,15 +3759,17 @@ function App() {
     // action: "approved" | "rejected"
     try {
       const b = bookings.find(b => b.id === id);
-      const fields = { approval_status: action };
+      const fields = { approval_status: action, last_edited_by: currentUser?.name || "" };
       const r = await fetch(`${SUPA_URL}/rest/v1/bookings?id=eq.${id}`, {
         method: "PATCH",
         headers: { ...supa.headers, "Prefer": "return=representation" },
         body: JSON.stringify(fields),
       });
       if (!r.ok) throw new Error(await r.text());
-      setBookings(p => p.map(bk => bk.id === id ? { ...bk, ...fields } : bk));
-      setDetailBooking(p => p ? { ...p, ...fields } : p);
+      const _rows = await r.json().catch(() => []);
+      const patch = _rows[0] ? _rows[0] : fields;
+      setBookings(p => p.map(bk => bk.id === id ? { ...bk, ...patch } : bk));
+      setDetailBooking(p => p ? { ...p, ...patch } : p);
 
       if (action === "approved") {
         addToast({ icon:"✅", title:"Booking Disetujui", message:`${b?.title || "Booking"} telah dikonfirmasi.`, color:"#10b981" });
@@ -3774,15 +3799,17 @@ function App() {
   // Update status field saja (status_jadwal atau status_assignment)
   const handleUpdateStatus = async (id, fields) => {
     try {
+      const payload = { ...fields, last_edited_by: currentUser?.name || "" };
       const r = await fetch(`${SUPA_URL}/rest/v1/bookings?id=eq.${id}`, {
         method: "PATCH",
         headers: { ...supa.headers, "Prefer": "return=representation" },
-        body: JSON.stringify(fields),
+        body: JSON.stringify(payload),
       });
       if (!r.ok) throw new Error(await r.text());
       const updated = await r.json();
-      setBookings(p => p.map(b => b.id === id ? { ...b, ...fields } : b));
-      setDetailBooking(p => p ? { ...p, ...fields } : p);
+      const patch = updated[0] ? updated[0] : payload;
+      setBookings(p => p.map(b => b.id === id ? { ...b, ...patch } : b));
+      setDetailBooking(p => p ? { ...p, ...patch } : p);
       addToast({ icon:"✅", title:"Status diperbarui", message: Object.values(fields)[0], color:"#10b981" });
     } catch(e) {
       addToast({ icon:"❌", title:"Gagal update status", message:e.message, color:"#ef4444" });
