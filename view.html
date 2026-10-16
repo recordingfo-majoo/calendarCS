@@ -128,7 +128,7 @@
     // ─── EMAILJS CONFIG (sama dengan aplikasi utama, dipakai untuk OTP daftar) ────
     const EJS_SERVICE = "service_4p9uk8r";
     const EJS_OTP_TPL = "template_s4ij3ko";
-    const EJS_FROM = "recordingfo@majoo.id";
+    const EJS_FROM = "halo@majoo.id";
     const EJS_PUBLIC = "ywihzNNLC8bD8iftb";
     window.addEventListener("DOMContentLoaded", () => {
       if (window.emailjs) emailjs.init({ publicKey: EJS_PUBLIC });
@@ -774,6 +774,61 @@
       return <CalendarView viewer={viewer} onLogout={logout} />;
     }
 
+    // ─── SEARCH RESULTS (cari judul / SCH Code / nomor invoice / agent) ────────────
+    function SearchResultsView({ bookings, rooms, query, onRowClick, onBack }) {
+      const q = (query || "").trim().toLowerCase();
+      const results = bookings
+        .filter(b => {
+          if (!q) return false;
+          const room = rooms.find(r => r.id === b.room_id);
+          const hay = `${b.title || ""} ${b.sch_code || ""} ${b.notes || ""} ${b.attendees || ""} ${room?.name || ""}`.toLowerCase();
+          return hay.includes(q);
+        })
+        .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (a.start_time || "").localeCompare(b.start_time || ""));
+      const fmtDateLabel = ds => {
+        const d = new Date(ds + "T00:00:00");
+        if (isNaN(d)) return { dayNum: "-", rest: ds };
+        const mo = d.toLocaleDateString("id-ID", { month: "short" });
+        const wd = d.toLocaleDateString("id-ID", { weekday: "short" });
+        return { dayNum: d.getDate(), rest: `${mo} ${d.getFullYear()}, ${wd}`.toUpperCase() };
+      };
+      return (
+        <div className="flex-1 overflow-y-auto bg-white">
+          <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3 flex items-center gap-3 z-10">
+            <button onClick={onBack} aria-label="Kembali ke kalender"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition-colors flex-shrink-0">&larr;</button>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-slate-800">Hasil Pencarian</div>
+              <div className="text-xs text-slate-400 truncate">{results.length} booking cocok dengan "{query}"</div>
+            </div>
+          </div>
+          {results.length === 0 ? (
+            <div className="py-16 text-center text-slate-400 text-sm">Tidak ada booking yang cocok</div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {results.map(b => {
+                const room = rooms.find(r => r.id === b.room_id);
+                const { dayNum, rest } = fmtDateLabel(b.date);
+                return (
+                  <button key={b.id} onClick={() => onRowClick(b)}
+                    className="w-full flex items-center gap-3 sm:gap-4 px-5 py-3 hover:bg-slate-50 transition-colors text-left">
+                    <div className="flex items-baseline gap-2 w-36 sm:w-44 flex-shrink-0">
+                      <span className="text-2xl font-bold text-slate-700 tabular-nums leading-none">{dayNum}</span>
+                      <span className="text-[11px] text-slate-400 font-medium tracking-wide">{rest}</span>
+                    </div>
+                    <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: room?.colorHex || "#cbd5e1" }} />
+                    <span className="text-xs text-slate-500 w-24 flex-shrink-0 tabular-nums">{b.start_time}-{b.end_time}</span>
+                    <span className="text-sm text-slate-700 font-medium truncate flex-1">{b.title || "(tanpa judul)"}</span>
+                    <span className="text-xs text-slate-400 hidden md:block flex-shrink-0 truncate max-w-[140px]">{room?.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function CalendarView({ viewer, onLogout }) {
       const [bookings, setBookings] = useState([]);
       const [holidays, setHolidays] = useState([]);
@@ -784,6 +839,7 @@
       const [detailBooking, setDetailBooking] = useState(null);
       const [lastRefresh, setLastRefresh] = useState(new Date());
       const lastSyncRef = React.useRef("");  // watermark delta-sync
+      const [searchQuery, setSearchQuery] = useState("");  // pencarian booking (judul/SCH/invoice/agent)
 
       const weekDays = getWeekDays(baseDate);
 
@@ -961,9 +1017,25 @@
             onClearAll={clearAll}
           />
 
+          {/* ── Search (judul / SCH / nomor invoice / agent) ── */}
+          <div className="bg-white border-b border-slate-200 px-4 py-2 flex-shrink-0">
+            <div className="relative max-w-md">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">🔍</span>
+              <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Cari judul, SCH, nomor invoice, agent..."
+                className="w-full pl-9 pr-9 py-2 text-sm rounded-lg border border-slate-200 focus:border-teal-400 focus:ring-1 focus:ring-teal-200 outline-none" />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery("")} aria-label="Hapus pencarian"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:bg-slate-100">&times;</button>
+              )}
+            </div>
+          </div>
+
           {/* ── Calendar ── */}
           <div className="flex-1 overflow-hidden flex flex-col">
-            {loading ? (
+            {searchQuery.trim() ? (
+              <SearchResultsView bookings={bookings} rooms={ROOMS} query={searchQuery} onRowClick={setDetailBooking} onBack={() => setSearchQuery("")} />
+            ) : loading ? (
               <div className="flex-1 flex items-center justify-center">
                 <div className="text-center">
                   <div className="w-8 h-8 border-2 border-teal-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
